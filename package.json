@@ -13,6 +13,7 @@
     "test:e2e": "playwright test",
     "start": "npm run bundle && electron dist/main/index.js",
     "smoke": "npm run bundle && node build-scripts/smoke-test.mjs",
+    "native:electron-smoke": "electron build-scripts/native-electron-smoke.cjs",
     "dist": "npm run compile:native && npm run bundle && electron-builder"
   },
   "dependencies": {
