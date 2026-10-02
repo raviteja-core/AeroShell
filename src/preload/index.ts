@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
-import { Channels, PressureEvent, Telemetry } from '../shared/ipc-contract';
+import { Channels, PressureEvent, Telemetry, WindowStateEvent } from '../shared/ipc-contract';
 
 const api = Object.freeze({
   getTelemetry: async (): Promise<Telemetry> => {
@@ -19,6 +19,18 @@ const api = Object.freeze({
     ipcRenderer.on(Channels.memoryPressure, handler);
     return () => {
       ipcRenderer.removeListener(Channels.memoryPressure, handler);
+    };
+  },
+  onWindowState: (cb: (e: WindowStateEvent) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, raw: unknown) => {
+      const parsed = WindowStateEvent.safeParse(raw);
+      if (parsed.success) {
+        cb(parsed.data);
+      }
+    };
+    ipcRenderer.on(Channels.windowState, handler);
+    return () => {
+      ipcRenderer.removeListener(Channels.windowState, handler);
     };
   },
 });

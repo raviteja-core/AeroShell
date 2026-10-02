@@ -4,6 +4,7 @@ export const Channels = {
   getTelemetry: 'aeroshell:get-telemetry',
   memoryPressure: 'aeroshell:memory-pressure',
   captureHeapSnapshot: 'aeroshell:capture-heap-snapshot',
+  windowState: 'aeroshell:window-state',
 } as const;
 
 export const GpuAdapter = z.object({
@@ -15,6 +16,7 @@ export const GpuAdapter = z.object({
   dedicatedVramMB: z.number().finite(),
   sharedSystemMB: z.number().finite(),
   vramBudgetMB: z.number().finite().optional(),
+  luid: z.string().optional(),
   // Renamed per DEV-012: IDXGIAdapter3 QueryVideoMemoryInfo reports calling-process VRAM
   mainProcessVramUsageMB: z.number().finite().optional(),
   // Extended for M5 PDH performance counters
@@ -63,14 +65,19 @@ export const Telemetry = z.object({
 });
 
 export const PressureEvent = z.object({
-  severity: z.enum(['WARN', 'CRITICAL']),
+  severity: z.enum(['NORMAL', 'WARN', 'CRITICAL']),
   reasons: z.array(z.string()),
   availPhysMB: z.number().finite(),
   vramUsagePct: z.number().finite().nullable(),
 });
 
+export const WindowStateEvent = z.object({
+  state: z.enum(['normal', 'minimized', 'maximized', 'hidden']),
+});
+
 export type Telemetry = z.infer<typeof Telemetry>;
 export type PressureEvent = z.infer<typeof PressureEvent>;
+export type WindowStateEvent = z.infer<typeof WindowStateEvent>;
 export type GpuAdapter = z.infer<typeof GpuAdapter>;
 
 // Request payload: strictly reject unknown keys

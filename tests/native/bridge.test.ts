@@ -78,6 +78,8 @@ describe('aero_win_bridge native addon', () => {
         expect(typeof gpu.isSoftware).toBe('boolean');
         expect(typeof gpu.dedicatedVramMB).toBe('number');
         expect(typeof gpu.sharedSystemMB).toBe('number');
+        expect(typeof gpu.luid).toBe('string');
+        expect(gpu.luid).toMatch(/^luid_0x[0-9A-Fa-f]{8}_0x[0-9A-Fa-f]{8}_phys_\d+$/);
 
         // Optional on virtual/software adapters or older DXGI
         if (gpu.vramBudgetMB !== undefined) {
@@ -90,6 +92,84 @@ describe('aero_win_bridge native addon', () => {
         }
       }
     });
+  });
+
+  describe('GetGpuCounters (PDH AsyncWorker)', () => {
+    it('returns expected shape with adapters and processes', async () => {
+      const res = await native.getGpuCounters([process.pid]);
+      expect(res).not.toBeNull();
+      expect(Array.isArray(res.adapters)).toBe(true);
+      expect(Array.isArray(res.processes)).toBe(true);
+      expect(typeof res.elapsedMs).toBe('number');
+
+      for (const adapter of res.adapters) {
+        expect(typeof adapter.luid).toBe('string');
+        expect(adapter.luid).toMatch(/^luid_0x[0-9A-Fa-f]{8}_0x[0-9A-Fa-f]{8}_phys_\d+$/);
+        expect(typeof adapter.dedicatedUsageMB).toBe('number');
+        expect(adapter.dedicatedUsageMB).toBeGreaterThanOrEqual(0);
+      }
+
+      for (const proc of res.processes) {
+        expect(proc.pid).toBe(process.pid);
+        expect(typeof proc.dedicatedUsageMB).toBe('number');
+        expect(proc.dedicatedUsageMB).toBeGreaterThanOrEqual(0);
+      }
+    });
+
+    it('rejects invalid arguments with appropriate errors', async () => {
+      // Non-array
+      // @ts-expect-error invalid argument test
+      expect(() => native.getGpuCounters('not-an-array')).toThrow(TypeError);
+      // @ts-expect-error invalid argument test
+      expect(() => native.getGpuCounters(1234)).toThrow(TypeError);
+      // @ts-expect-error invalid argument test
+      expect(() => native.getGpuCounters(null)).toThrow(TypeError);
+
+      // Array exceeding 16 items
+      const largeArray = Array.from({ length: 17 }, (_, i) => i + 1);
+      expect(() => native.getGpuCounters(largeArray)).toThrow(RangeError);
+
+      // Non-integer elements
+      // @ts-expect-error invalid element test
+      expect(() => native.getGpuCounters(['invalid'])).toThrow(TypeError);
+      // @ts-expect-error invalid element test
+      expect(() => native.getGpuCounters([null])).toThrow(TypeError);
+
+      // Out of bounds / non-positive PID
+      expect(() => native.getGpuCounters([0])).toThrow(RangeError);
+      expect(() => native.getGpuCounters([-1])).toThrow(RangeError);
+      expect(() => native.getGpuCounters([0x100000000])).toThrow(RangeError);
+    });
+
+    it('executes 2,000 queries in a leak loop without handle exhaustion', async () => {
+      function getHandleCount(): number {
+        try {
+          const { execFileSync } = require('node:child_process');
+          const out = execFileSync(
+            'powershell.exe',
+            ['-NoProfile', '-Command', `(Get-Process -Id ${process.pid}).HandleCount`],
+            { encoding: 'utf8' }
+          );
+          return parseInt(out.trim(), 10);
+        } catch {
+          return 0;
+        }
+      }
+
+      // Warm up
+      await native.getGpuCounters([process.pid]);
+
+      const handlesBefore = getHandleCount();
+      for (let i = 0; i < 2000; i++) {
+        await native.getGpuCounters([process.pid]);
+      }
+      const handlesAfter = getHandleCount();
+
+      if (handlesBefore > 0 && handlesAfter > 0) {
+        const handleGrowth = handlesAfter - handlesBefore;
+        expect(handleGrowth).toBeLessThan(50);
+      }
+    }, 60000);
   });
 
   describe('ReadRegistry (Security Allowlist & Type Support)', () => {

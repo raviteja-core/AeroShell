@@ -65,7 +65,7 @@ export interface HeapSnapshotOptions {
   reason: string;
   isDev: boolean;
   readRegistry: (area: number, name: string) => string | number | null;
-  writeHeapSnapshot: (filename: string) => string;
+  writeHeapSnapshot: (filename: string) => Promise<string> | string;
   now?: () => number;
 }
 
@@ -74,13 +74,13 @@ const RATE_LIMIT_MS = 60_000;
 const MAX_SNAPSHOTS = 5;
 
 /**
- * Executes a controlled V8 heap snapshot capture with diagnostics authorization,
- * rate limiting (1 per 60s), and a 5-file retention ceiling.
- *
- * NOTE: v8.writeHeapSnapshot blocks the main Node.js event loop synchronously
- * while writing the heap snapshot to disk.
+ * Executes a controlled heap snapshot capture with diagnostics authorization,
+ * rate limiting (1 per 60s), minimum 50 MB free disk space verification,
+ * and a 5-file retention ceiling.
  */
-export function handleCaptureHeapSnapshot(opts: HeapSnapshotOptions): { file: string } {
+export function handleCaptureHeapSnapshot(
+  opts: HeapSnapshotOptions
+): { file: string } | Promise<{ file: string }> {
   // 1. Diagnostics authorization check: active dev build OR registry policy EnableDiagnostics == 1
   let regPolicy: string | number | null = null;
   try {
@@ -101,48 +101,73 @@ export function handleCaptureHeapSnapshot(opts: HeapSnapshotOptions): { file: st
     throw new Error(`Rate limit exceeded: please wait ${waitSec}s before capturing another snapshot`);
   }
 
-  // 3. Sanitize filename and prepare destination directory
+  // 3. Free disk space verification (minimum 50 MB required)
+  if (typeof (fs as any).statfsSync === 'function') {
+    try {
+      if (fs.existsSync(opts.userDataDir)) {
+        const stats = (fs as any).statfsSync(opts.userDataDir);
+        const freeMB = (stats.bavail * stats.bsize) / (1024 * 1024);
+        if (freeMB < 50) {
+          throw new Error(`Insufficient disk space: ${Math.round(freeMB)} MB available, minimum 50 MB required`);
+        }
+      }
+    } catch (err: any) {
+      if (err?.message?.includes('Insufficient disk space')) {
+        throw err;
+      }
+    }
+  }
+
+  // 4. Sanitize filename and prepare destination directory
   const sanitizedReason = opts.reason.replace(/[^\w-]/g, '_').slice(0, 80);
   const diagDir = path.join(opts.userDataDir, 'Diagnostics');
   fs.mkdirSync(diagDir, { recursive: true });
 
   const targetFile = path.join(diagDir, `heap-${currentTime}-${sanitizedReason}.heapsnapshot`);
 
-  // Synchronous blocking V8 heap write
-  const actualPath = opts.writeHeapSnapshot(targetFile);
-  lastSnapshotTime = currentTime;
+  const pruneOldSnapshots = () => {
+    try {
+      const files = fs
+        .readdirSync(diagDir)
+        .filter((f) => f.startsWith('heap-') && f.endsWith('.heapsnapshot'))
+        .map((f) => {
+          const fullPath = path.join(diagDir, f);
+          const match = /^heap-(\d+)-/.exec(f);
+          const fileTime = match && match[1] ? parseInt(match[1], 10) : 0;
+          return {
+            name: f,
+            fullPath,
+            time: fileTime || fs.statSync(fullPath).mtimeMs,
+          };
+        })
+        .sort((a, b) => b.time - a.time);
 
-  // 4. Enforce 5-file retention limit by pruning oldest heap snapshots
-  try {
-    const files = fs
-      .readdirSync(diagDir)
-      .filter((f) => f.startsWith('heap-') && f.endsWith('.heapsnapshot'))
-      .map((f) => {
-        const fullPath = path.join(diagDir, f);
-        const match = /^heap-(\d+)-/.exec(f);
-        const fileTime = match ? parseInt(match[1], 10) : 0;
-        return {
-          name: f,
-          fullPath,
-          time: fileTime || fs.statSync(fullPath).mtimeMs,
-        };
-      })
-      .sort((a, b) => b.time - a.time); // newest first
-
-
-    if (files.length > MAX_SNAPSHOTS) {
-      const toDelete = files.slice(MAX_SNAPSHOTS);
-      for (const item of toDelete) {
-        try {
-          fs.unlinkSync(item.fullPath);
-        } catch {}
+      if (files.length > MAX_SNAPSHOTS) {
+        const toDelete = files.slice(MAX_SNAPSHOTS);
+        for (const item of toDelete) {
+          try {
+            fs.unlinkSync(item.fullPath);
+          } catch {}
+        }
       }
+    } catch (err) {
+      console.warn('[diagnostics] Failed to prune heap snapshots:', err);
     }
-  } catch (err) {
-    console.warn('[diagnostics] Failed to prune heap snapshots:', err);
+  };
+
+  const writeResult = opts.writeHeapSnapshot(targetFile);
+
+  if (writeResult instanceof Promise) {
+    return writeResult.then((actualPath) => {
+      lastSnapshotTime = currentTime;
+      pruneOldSnapshots();
+      return { file: (typeof actualPath === 'string' && actualPath) ? actualPath : targetFile };
+    });
   }
 
-  return { file: actualPath || targetFile };
+  lastSnapshotTime = currentTime;
+  pruneOldSnapshots();
+  return { file: (typeof writeResult === 'string' && writeResult) ? writeResult : targetFile };
 }
 
 /** Reset internal rate limiter state (useful for test isolation) */

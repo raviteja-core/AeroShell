@@ -51,6 +51,7 @@ export class DocumentVisibilitySource implements VisibilitySource {
 export class RenderLoopController {
   private isPausedByVisibility = false;
   private isPausedByContextLoss = false;
+  private isPausedByWindowState = false;
   private onStart: () => void;
   private onStop: () => void;
   private visibilitySource: VisibilitySource;
@@ -78,7 +79,7 @@ export class RenderLoopController {
       this.onStop();
     } else {
       this.isPausedByVisibility = false;
-      if (!this.isPausedByContextLoss) {
+      if (!this.isPausedByContextLoss && !this.isPausedByWindowState) {
         this.onStart();
       }
     }
@@ -88,13 +89,23 @@ export class RenderLoopController {
     this.isPausedByContextLoss = lost;
     if (lost) {
       this.onStop();
-    } else if (!this.isPausedByVisibility) {
+    } else if (!this.isPausedByVisibility && !this.isPausedByWindowState) {
+      this.onStart();
+    }
+  }
+
+  public setWindowState(state: 'normal' | 'minimized' | 'maximized' | 'hidden'): void {
+    const isPaused = (state === 'minimized' || state === 'hidden');
+    this.isPausedByWindowState = isPaused;
+    if (isPaused) {
+      this.onStop();
+    } else if (!this.isPausedByVisibility && !this.isPausedByContextLoss) {
       this.onStart();
     }
   }
 
   public isRunning(): boolean {
-    return !this.isPausedByVisibility && !this.isPausedByContextLoss;
+    return !this.isPausedByVisibility && !this.isPausedByContextLoss && !this.isPausedByWindowState;
   }
 
   public dispose(): void {
@@ -352,6 +363,10 @@ export class CadViewport {
       this.renderer.setPixelRatio(baseRatio);
       this.resize();
     }
+  }
+
+  public setWindowState(state: 'normal' | 'minimized' | 'maximized' | 'hidden'): void {
+    this.controller.setWindowState(state);
   }
 
   /**

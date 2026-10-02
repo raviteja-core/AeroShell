@@ -2,7 +2,11 @@ import { app, BrowserWindow } from 'electron';
 import * as path from 'node:path';
 import { registerSchemes, registerProtocolHandlers } from './protocol-handler';
 import { installSessionPolicy, hardenWebContents } from './security-guard';
-import { registerIpc, fetchGpuInfoAfterReady } from './ipc';
+import { registerIpc, fetchGpuInfoAfterReady, getNativeAddon, getActiveGpuDevice } from './ipc';
+import { initCrashReporter, CrashMonitor } from './crash-monitor';
+import { isGpuFallbackActive } from './gpu-fallback-policy';
+import { PressureWatchdog } from './watchdog';
+import { Channels } from '../shared/ipc-contract';
 
 // 1) Single-instance lock: exit before ANY side effect.
 if (!app.requestSingleInstanceLock()) {
@@ -12,8 +16,20 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 function bootstrap(): void {
+  // Start crash reporter before ready
+  initCrashReporter();
+
   // Register privileged schemes BEFORE app is ready
   registerSchemes();
+
+  // GPU fallback check: if 3 GPU crashes occurred in 5m within the last 7 days, disable HW accel
+  try {
+    const userData = app.getPath('userData');
+    if (isGpuFallbackActive(userData, process.versions.electron)) {
+      console.warn('[main] Hardware acceleration disabled due to GPU fallback policy.');
+      app.disableHardwareAcceleration();
+    }
+  } catch {}
 
   // Test-only software rendering flag for headless / CI runners without hardware GPUs
   if (process.env.AEROSHELL_TEST_SOFTWARE_GL === '1') {
@@ -21,7 +37,6 @@ function bootstrap(): void {
     app.commandLine.appendSwitch('use-angle', 'swiftshader');
     app.commandLine.appendSwitch('enable-unsafe-swiftshader');
   }
-
 
   app.whenReady().then(async () => {
     registerProtocolHandlers();
@@ -50,11 +65,35 @@ function bootstrap(): void {
 
     registerIpc(win);
 
+    // Attach crash monitor (handles render-process-gone and child-process-gone)
+    new CrashMonitor(win);
+
+    // Attach memory pressure watchdog
+    const watchdog = new PressureWatchdog({
+      win,
+      getNative: getNativeAddon,
+      getActiveGpu: getActiveGpuDevice,
+    });
+    watchdog.start();
+
+    // Window state IPC emitter (Zod-validated channel)
+    const sendWindowState = (state: 'normal' | 'minimized' | 'maximized' | 'hidden') => {
+      if (!win.isDestroyed()) {
+        win.webContents.send(Channels.windowState, { state });
+      }
+    };
+
+    win.on('minimize', () => sendWindowState('minimized'));
+    win.on('restore', () => sendWindowState(win.isMaximized() ? 'maximized' : 'normal'));
+    win.on('maximize', () => sendWindowState('maximized'));
+    win.on('unmaximize', () => sendWindowState('normal'));
+    win.on('hide', () => sendWindowState('hidden'));
+    win.on('show', () => sendWindowState(win.isMaximized() ? 'maximized' : 'normal'));
+
     win.once('ready-to-show', () => {
       win.show();
       fetchGpuInfoAfterReady();
     });
-
 
     await win.loadURL('aeroshell-app://app/index.html');
 

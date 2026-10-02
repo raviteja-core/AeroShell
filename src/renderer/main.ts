@@ -1,11 +1,12 @@
 import { CadViewport } from './cad-viewport';
-import { Telemetry, PressureEvent } from '../shared/ipc-contract';
+import { Telemetry, PressureEvent, WindowStateEvent } from '../shared/ipc-contract';
 
 // Declare aeroPlatform bridge interface
 interface AeroPlatformBridge {
   getTelemetry: () => Promise<Telemetry>;
   captureHeapSnapshot: (reason: string) => Promise<{ file: string }>;
   onMemoryPressure: (cb: (e: PressureEvent) => void) => () => void;
+  onWindowState?: (cb: (e: WindowStateEvent) => void) => () => void;
 }
 
 declare global {
@@ -23,6 +24,7 @@ const banner = document.getElementById('context-loss-banner');
 const hudGpu = document.getElementById('hud-gpu');
 const hudVramTotal = document.getElementById('hud-vram-total');
 const hudVramBudget = document.getElementById('hud-vram-budget');
+const hudVramUsage = document.getElementById('hud-vram-usage');
 const hudFps = document.getElementById('hud-fps');
 const hudFrameTime = document.getElementById('hud-frame-time');
 const hudMetrics = document.getElementById('hud-metrics');
@@ -67,7 +69,7 @@ async function testWorkerCOEP(): Promise<void> {
 }
 void testWorkerCOEP();
 
-// 4. Memory pressure listener
+// 4. Memory pressure & Window state listeners
 if (window.aeroPlatform) {
   window.aeroPlatform.onMemoryPressure((event: PressureEvent) => {
     viewport.setPressure(event.severity);
@@ -80,9 +82,20 @@ if (window.aeroPlatform) {
         hudPressure.textContent = `PRESSURE: CRITICAL (${event.reasons.join(', ')})`;
         hudPressure.classList.remove('hidden', 'pressure-warn');
         hudPressure.classList.add('pressure-critical');
+      } else {
+        // NORMAL
+        hudPressure.textContent = '';
+        hudPressure.classList.remove('pressure-warn', 'pressure-critical');
+        hudPressure.classList.add('hidden');
       }
     }
   });
+
+  if (window.aeroPlatform.onWindowState) {
+    window.aeroPlatform.onWindowState((event: WindowStateEvent) => {
+      viewport.setWindowState(event.state);
+    });
+  }
 }
 
 // 5. Telemetry & GPU truth check
@@ -100,6 +113,13 @@ async function updateTelemetry(): Promise<void> {
     }
     if (hudVramBudget) {
       hudVramBudget.textContent = `VRAM budget (OS): ${highPerfGpu?.vramBudgetMB !== undefined ? Math.round(highPerfGpu.vramBudgetMB) + ' MB' : 'N/A'}`;
+    }
+    if (hudVramUsage) {
+      if (highPerfGpu?.adapterVramUsageMB !== undefined) {
+        hudVramUsage.textContent = `VRAM used (adapter): ${Math.round(highPerfGpu.adapterVramUsageMB)} MB`;
+      } else {
+        hudVramUsage.textContent = 'VRAM used (adapter): n/a';
+      }
     }
 
 

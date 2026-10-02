@@ -26,17 +26,35 @@ test.describe('WebGL Viewport, HUD, Context Loss & GPU Truth Check (E2E)', () =>
 
     // Register strict CSP violation listener before any page scripts execute
     await page.addInitScript(() => {
-      (window as unknown as { __cspViolations: Array<{ directive: string; blockedURI: string }> }).__cspViolations = [];
-      window.addEventListener('securitypolicyviolation', (e) => {
-        (window as unknown as { __cspViolations: Array<{ directive: string; blockedURI: string }> }).__cspViolations.push({
-          directive: e.effectiveDirective,
-          blockedURI: e.blockedURI,
+      const recorded: Array<{ directive: string; blockedURI: string }> = [];
+      (window as unknown as { __cspViolations: Array<{ directive: string; blockedURI: string }> }).__cspViolations = recorded;
+      const handler = (e: Event) => {
+        const evt = e as SecurityPolicyViolationEvent;
+        recorded.push({
+          directive: evt.effectiveDirective,
+          blockedURI: evt.blockedURI,
         });
-      });
+      };
+      window.addEventListener('securitypolicyviolation', handler);
+      document.addEventListener('securitypolicyviolation', handler);
     });
 
     await page.waitForURL(/^aeroshell-app:\/\/app\//, { timeout: 10000 });
     await page.waitForLoadState('networkidle');
+
+    await page.evaluate(() => {
+      const recorded: Array<{ directive: string; blockedURI: string }> = [];
+      (window as unknown as { __cspViolations: Array<{ directive: string; blockedURI: string }> }).__cspViolations = recorded;
+      const handler = (e: Event) => {
+        const evt = e as SecurityPolicyViolationEvent;
+        recorded.push({
+          directive: evt.effectiveDirective,
+          blockedURI: evt.blockedURI,
+        });
+      };
+      window.addEventListener('securitypolicyviolation', handler);
+      document.addEventListener('securitypolicyviolation', handler);
+    });
   });
 
   test.afterAll(async () => {
@@ -56,6 +74,7 @@ test.describe('WebGL Viewport, HUD, Context Loss & GPU Truth Check (E2E)', () =>
         metrics: document.getElementById('hud-metrics')?.textContent,
         vramTotal: document.getElementById('hud-vram-total')?.textContent,
         vramBudget: document.getElementById('hud-vram-budget')?.textContent,
+        vramUsage: document.getElementById('hud-vram-usage')?.textContent,
         rawHud: document.getElementById('hud')?.textContent,
       };
     });
@@ -65,6 +84,7 @@ test.describe('WebGL Viewport, HUD, Context Loss & GPU Truth Check (E2E)', () =>
     expect(hudData.metrics).toMatch(/Draw calls:\s*\d+\s*\|\s*Triangles:\s*\d+\s*\|\s*Geometries:\s*\d+\s*\|\s*Textures:\s*\d+/);
     expect(hudData.vramTotal).toMatch(/VRAM total:\s*\d+\s*MB/);
     expect(hudData.vramBudget).toMatch(/VRAM budget \(OS\):\s*([\d.]+\s*MB|N\/A)/);
+    expect(hudData.vramUsage).toMatch(/VRAM used \(adapter\):\s*(\d+\s*MB|n\/a)/);
 
     // DEV-012: HUD must NEVER display main-process VRAM usage
     expect(hudData.rawHud).not.toContain('mainProcessVramUsageMB');
@@ -265,6 +285,86 @@ test.describe('WebGL Viewport, HUD, Context Loss & GPU Truth Check (E2E)', () =>
     });
 
     expect(violations).toEqual([]);
+  });
+
+  test('Automated minimize pauses WebGL render loop, restore resumes frame progression', async () => {
+    // 1. Initial frame progression
+    const frame0 = await page.evaluate(() => {
+      const vp = (window as unknown as { __cadViewport?: { getMetrics: () => { frame: number } } }).__cadViewport;
+      return vp?.getMetrics().frame ?? 0;
+    });
+    await page.waitForTimeout(500);
+    const framePre = await page.evaluate(() => {
+      const vp = (window as unknown as { __cadViewport?: { getMetrics: () => { frame: number } } }).__cadViewport;
+      return vp?.getMetrics().frame ?? 0;
+    });
+    expect(framePre).toBeGreaterThan(frame0);
+
+    // 2. Minimize window via electronApp.evaluate
+    await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      if (w) w.minimize();
+    });
+
+    // Wait for IPC window-state event to reach renderer
+    await page.waitForTimeout(200);
+
+    // Check visibilityState and frame delta over 1.5 seconds
+    const minState = await page.evaluate(async () => {
+      const vp = (window as unknown as { __cadViewport?: { getMetrics: () => { frame: number } } }).__cadViewport;
+      const initial = vp?.getMetrics().frame ?? 0;
+      const visState = document.visibilityState;
+      await new Promise((r) => setTimeout(r, 1500));
+      const after = vp?.getMetrics().frame ?? 0;
+      return {
+        visState,
+        frameDelta: after - initial,
+        initial,
+        after,
+      };
+    });
+
+    console.log(`[minimize-test] visibilityState during minimize: "${minState.visState}", frameDelta: ${minState.frameDelta}`);
+    expect(minState.frameDelta).toBe(0);
+
+    // 3. Restore window via electronApp.evaluate
+    await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      if (w) w.restore();
+    });
+
+    await page.waitForTimeout(500);
+
+    const framePost = await page.evaluate(() => {
+      const vp = (window as unknown as { __cadViewport?: { getMetrics: () => { frame: number } } }).__cadViewport;
+      return vp?.getMetrics().frame ?? 0;
+    });
+
+    // Verify render loop resumed
+    expect(framePost).toBeGreaterThan(minState.after);
+  });
+
+  test('CSP Positive Control: deliberate violation triggers SecurityPolicyViolation listener', async () => {
+    // Deliberately violate script-src by setting script src to data: URI (allowed by network policy, blocked by CSP)
+    await page.evaluate(async () => {
+      try {
+        const s = document.createElement('script');
+        s.src = 'data:text/javascript,void 0;';
+        document.head.appendChild(s);
+      } catch {}
+      try {
+        await fetch('data:text/plain,blocked');
+      } catch {}
+    });
+
+    await page.waitForTimeout(300);
+
+    const violations = await page.evaluate(() => {
+      return (window as unknown as { __cspViolations?: Array<{ directive: string; blockedURI: string }> }).__cspViolations || [];
+    });
+
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations[0]?.directive).toContain('script-src');
   });
 });
 

@@ -32,4 +32,5 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 target_link_options(${PROJECT_NAME} PRIVATE
   /DEBUG /OPT:REF /OPT:ICF /DYNAMICBASE /NXCOMPAT /CETCOMPAT /GUARD:CF)
 target_link_libraries(${PROJECT_NAME} PRIVATE
-  ${CMAKE_JS_LIB} dxgi.lib advapi32.lib)
+  ${CMAKE_JS_LIB} dxgi.lib advapi32.lib pdh.lib)
+

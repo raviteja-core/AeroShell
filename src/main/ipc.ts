@@ -66,27 +66,115 @@ export function fetchGpuInfoAfterReady(): void {
 }
 
 
-export async function collectTelemetry(): Promise<Telemetry> {
+export function getNativeAddon(): any {
+  return getNative();
+}
 
+export function getActiveGpuDevice(): { vendorId?: number; deviceId?: number } | undefined {
+  return activeGpuDevice;
+}
+
+async function captureRendererHeapSnapshotCdp(win: BrowserWindow, targetFile: string): Promise<string> {
+  const dbg = win.webContents.debugger;
+  let attachedByUs = false;
+
+  if (!dbg.isAttached()) {
+    dbg.attach('1.3');
+    attachedByUs = true;
+  }
+
+  const writeStream = fs.createWriteStream(targetFile, { flags: 'w', encoding: 'utf8' });
+
+  const onMessage = (_evt: any, method: string, params: any) => {
+    if (method === 'HeapProfiler.addHeapSnapshotChunk' && params?.chunk) {
+      writeStream.write(params.chunk);
+    }
+  };
+
+  dbg.on('message', onMessage);
+
+  try {
+    await dbg.sendCommand('HeapProfiler.enable');
+    await dbg.sendCommand('HeapProfiler.takeHeapSnapshot', {
+      reportProgress: false,
+      captureNumericValue: true,
+    });
+  } finally {
+    dbg.off('message', onMessage);
+    await new Promise<void>((resolve, reject) => {
+      writeStream.end((err?: Error | null) => {
+        if (err) reject(err); else resolve();
+      });
+    });
+    if (attachedByUs && dbg.isAttached()) {
+      try {
+        dbg.detach();
+      } catch {}
+    }
+  }
+
+  return targetFile;
+}
+
+export async function collectTelemetry(): Promise<Telemetry> {
   const native = getNative();
   const heap = v8.getHeapStatistics();
 
+  const metrics = app.getAppMetrics();
+  const gpuProc = metrics.find((m) => m.type === 'GPU');
+  const rendererProc = metrics.find((m) => m.type === 'Tab');
+
+  const pids: number[] = [];
+  if (gpuProc?.pid) pids.push(gpuProc.pid);
+  if (rendererProc?.pid) pids.push(rendererProc.pid);
+
+  let pdhCounters: any = null;
+  try {
+    if (native?.getGpuCounters && pids.length > 0) {
+      pdhCounters = await native.getGpuCounters(pids);
+    }
+  } catch (err) {
+    // Degrade gracefully on PDH failure
+  }
+
   const rawGpus = native.getGpuHardwareInfo();
-  const gpus = rawGpus.map((g: any) => ({
-    index: g.index,
-    name: g.name,
-    vendorId: g.vendorId,
-    deviceId: g.deviceId,
-    isSoftware: g.isSoftware,
-    dedicatedVramMB: g.dedicatedVramMB,
-    sharedSystemMB: g.sharedSystemMB,
-    vramBudgetMB: g.vramBudgetMB,
-    // DEV-012: Map native vramUsageMB (calling-process VRAM) to mainProcessVramUsageMB
-    mainProcessVramUsageMB: g.vramUsageMB,
-  }));
+  const gpus = rawGpus.map((g: any) => {
+    let adapterVramUsageMB: number | undefined = undefined;
+    let gpuProcessVramMB: number | undefined = undefined;
+
+    if (pdhCounters?.adapters && Array.isArray(pdhCounters.adapters)) {
+      const match = pdhCounters.adapters.find((a: any) => a.luid === g.luid);
+      if (match) {
+        adapterVramUsageMB = match.dedicatedUsageMB;
+      }
+    }
+
+    if (pdhCounters?.processes && Array.isArray(pdhCounters.processes) && gpuProc?.pid) {
+      const match = pdhCounters.processes.find((p: any) => p.pid === gpuProc.pid);
+      if (match) {
+        gpuProcessVramMB = match.dedicatedUsageMB;
+      }
+    }
+
+    return {
+      index: g.index,
+      name: g.name,
+      vendorId: g.vendorId,
+      deviceId: g.deviceId,
+      isSoftware: g.isSoftware,
+      dedicatedVramMB: g.dedicatedVramMB,
+      sharedSystemMB: g.sharedSystemMB,
+      vramBudgetMB: g.vramBudgetMB,
+      luid: g.luid,
+      // DEV-012: Map native vramUsageMB (calling-process VRAM) to mainProcessVramUsageMB
+      mainProcessVramUsageMB: g.vramUsageMB,
+      adapterVramUsageMB,
+      gpuProcessVramMB,
+    };
+  });
 
   const system = native.getSystemMemoryInfo();
-  const processes = app.getAppMetrics().map((m) => ({
+  const processes = metrics.map((m) => ({
     type: m.type,
     pid: m.pid,
     workingSetMB: m.memory.workingSetSize / 1024, // KB -> MB conversion
@@ -122,8 +210,6 @@ export async function collectTelemetry(): Promise<Telemetry> {
     } catch {}
   }
 
-
-
   return Telemetry.parse({
     gpus,
     system,
@@ -151,7 +237,7 @@ export function registerIpc(win: BrowserWindow): void {
       reason,
       isDev: !app.isPackaged,
       readRegistry: (area, name) => native.readRegistry(area, name),
-      writeHeapSnapshot: (filename) => v8.writeHeapSnapshot(filename),
+      writeHeapSnapshot: (filename) => captureRendererHeapSnapshotCdp(win, filename),
     });
   });
 }

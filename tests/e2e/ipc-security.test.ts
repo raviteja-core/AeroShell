@@ -44,7 +44,7 @@ test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
       return Object.keys(window.aeroPlatform || {}).sort();
     });
 
-    expect(keys).toEqual(['captureHeapSnapshot', 'getTelemetry', 'onMemoryPressure']);
+    expect(keys).toEqual(['captureHeapSnapshot', 'getTelemetry', 'onMemoryPressure', 'onWindowState']);
   });
 
   test('Preload isolation: Node primitives are strictly undefined in renderer', async () => {
@@ -103,7 +103,7 @@ test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
     expect(telemetry.v8.usedHeapMB).toBeGreaterThan(0);
   });
 
-  test('IPC captureHeapSnapshot: writes snapshot file under Diagnostics directory in dev test build', async () => {
+  test('IPC captureHeapSnapshot: streams CDP chunks to file starting with {"snapshot" and detaches debugger', async () => {
     const res = await page.evaluate(async () => {
       // @ts-expect-error aeroPlatform untyped in global test context
       return await window.aeroPlatform.captureHeapSnapshot('e2e_verify');
@@ -113,6 +113,16 @@ test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
     expect(typeof res.file).toBe('string');
     expect(res.file).toContain('e2e_verify');
     expect(fs.existsSync(res.file)).toBe(true);
+
+    // Verify snapshot file begins with {"snapshot"
+    const fileSnippet = fs.readFileSync(res.file, 'utf8').slice(0, 100);
+    expect(fileSnippet.trimStart().startsWith('{"snapshot"')).toBe(true);
+
+    // Verify webContents debugger is detached in finally
+    const isAttached = await app.evaluate(({ BrowserWindow }) => {
+      return BrowserWindow.getAllWindows()[0]?.webContents.debugger.isAttached() ?? false;
+    });
+    expect(isAttached).toBe(false);
 
     // Clean up created snapshot
     try {

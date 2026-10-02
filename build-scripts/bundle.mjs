@@ -26,6 +26,7 @@ async function buildAll() {
         'process.env.AEROSHELL_TEST_SOFTWARE_GL': 'undefined',
         'process.env.AEROSHELL_TEST_MODEL_ROOT': 'undefined',
         'process.env.AEROSHELL_TEST_CREATE_HOSTILE_WINDOW': 'undefined',
+        'process.env.AEROSHELL_TEST_FORCE_RAM_PRESSURE': 'undefined',
       };
 
   console.log(`[bundle] Bundling Main process (out: ${path.basename(outBase)}, mode: ${isTest ? 'TEST' : isDev ? 'DEV' : 'PRODUCTION'})...`);
@@ -101,6 +102,12 @@ async function buildAll() {
     fs.copyFileSync(
       path.join(rootDir, 'src', 'renderer', 'styles.css'),
       path.join(outBase, 'renderer', 'styles.css')
+    );
+  }
+  if (fs.existsSync(path.join(rootDir, 'src', 'renderer', 'crash-error.html'))) {
+    fs.copyFileSync(
+      path.join(rootDir, 'src', 'renderer', 'crash-error.html'),
+      path.join(outBase, 'renderer', 'crash-error.html')
     );
   }
 

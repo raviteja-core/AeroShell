@@ -3,4 +3,5 @@
 
 namespace aero::native {
 Napi::Value GetGpuHardwareInfo(const Napi::CallbackInfo& info);
+Napi::Value GetGpuCounters(const Napi::CallbackInfo& info);
 }  // namespace aero::native
