@@ -1,0 +1,35 @@
+{
+  "name": "aeroshell",
+  "version": "0.1.0",
+  "description": "Hardened Electron desktop shell for WebGL/Three.js CAD viewport",
+  "author": "dev.yourhandle.aeroshell",
+  "private": true,
+  "main": "dist/main/index.js",
+  "scripts": {
+    "compile:native": "cmake-js compile -d src/native --runtime electron --runtime-version 44.5.1 --arch x64 -O build",
+    "bundle": "node build-scripts/bundle.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "start": "npm run bundle && electron dist/main/index.js",
+    "smoke": "npm run bundle && node build-scripts/smoke-test.mjs",
+    "dist": "npm run compile:native && npm run bundle && electron-builder"
+  },
+  "dependencies": {
+    "three": "0.174.0",
+    "zod": "3.24.2"
+  },
+  "devDependencies": {
+    "@electron/fuses": "2.1.3",
+    "@playwright/test": "1.50.1",
+    "@types/node": "24.19.1",
+    "@types/three": "0.174.0",
+    "cmake-js": "8.0.0",
+    "electron": "44.5.1",
+    "electron-builder": "25.1.8",
+    "esbuild": "0.25.0",
+    "node-addon-api": "8.3.1",
+    "typescript": "5.8.2",
+    "vitest": "3.0.7"
+  }
+}

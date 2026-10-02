@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' aeroshell-asset: data: blob:; connect-src 'self' aeroshell-asset:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>AeroShell Viewport</title>
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<div id="hud">
+  <div id="app-title"><strong>AeroShell</strong></div>
+  <div id="gpu">GPU: ...</div>
+  <div id="mem">Memory: ...</div>
+  <div id="pressure" hidden></div>
+</div>
+<canvas id="cad-canvas"></canvas>
+<script src="./main.js"></script>
+</body>
+</html>
