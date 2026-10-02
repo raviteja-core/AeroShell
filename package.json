@@ -8,9 +8,10 @@
   "scripts": {
     "compile:native": "cmake-js compile -d src/native --runtime electron --runtime-version 44.5.1 --arch x64 -O build",
     "bundle": "node build-scripts/bundle.mjs",
+    "bundle:test": "node build-scripts/bundle.mjs --test",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "npm run bundle:test && playwright test",
     "start": "npm run bundle && electron dist/main/index.js",
     "smoke": "npm run bundle && node build-scripts/smoke-test.mjs",
     "native:electron-smoke": "electron build-scripts/native-electron-smoke.cjs",

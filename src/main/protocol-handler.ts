@@ -74,7 +74,14 @@ function parseRange(
   rangeHeader: string,
   totalSize: number
 ): { start: number; end: number } | 'invalid' {
-  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+  const trimmed = rangeHeader.trim();
+
+  // Multi-range requests (e.g. bytes=0-10,20-30) are rejected with 416 to prevent multipart DoS attacks
+  if (trimmed.includes(',')) {
+    return 'invalid';
+  }
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(trimmed);
   if (!match) return 'invalid';
 
   const [, startStr, endStr] = match;
@@ -85,10 +92,13 @@ function parseRange(
     start = parseInt(startStr, 10);
     end = parseInt(endStr, 10);
   } else if (startStr && !endStr) {
+    // Open-ended: bytes=start-
     start = parseInt(startStr, 10);
     end = totalSize - 1;
   } else if (!startStr && endStr) {
+    // Suffix: bytes=-suffix
     const suffix = parseInt(endStr, 10);
+    if (suffix <= 0) return 'invalid';
     start = Math.max(0, totalSize - suffix);
     end = totalSize - 1;
   } else {
@@ -212,6 +222,7 @@ export function registerProtocolHandlers(): void {
         h.set('Content-Length', String(chunkSize));
 
         const stream = fs.createReadStream(file, { start, end });
+        req.signal?.addEventListener('abort', () => stream.destroy());
         const webStream = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
         return new Response(webStream, { status: 206, headers: h });
       }
@@ -219,6 +230,7 @@ export function registerProtocolHandlers(): void {
       // Full asset response
       h.set('Content-Length', String(totalSize));
       const stream = fs.createReadStream(file);
+      req.signal?.addEventListener('abort', () => stream.destroy());
       const webStream = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
       return new Response(webStream, { status: 200, headers: h });
     } catch {

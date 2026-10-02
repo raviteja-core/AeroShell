@@ -9,11 +9,18 @@ const rootDir = path.resolve(__dirname, '..');
 
 async function buildAll() {
   const isDev = process.argv.includes('--dev');
-  fs.mkdirSync(path.join(rootDir, 'dist', 'main'), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, 'dist', 'preload'), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, 'dist', 'renderer'), { recursive: true });
+  const isTest = process.argv.includes('--test') || process.env.NODE_ENV === 'test';
 
-  console.log('[bundle] Bundling Main process...');
+  const defines = isTest
+    ? {}
+    : {
+        'process.env.AEROSHELL_TEST': 'undefined',
+        'process.env.AEROSHELL_TEST_SOFTWARE_GL': 'undefined',
+        'process.env.AEROSHELL_TEST_MODEL_ROOT': 'undefined',
+        'process.env.AEROSHELL_TEST_CREATE_HOSTILE_WINDOW': 'undefined',
+      };
+
+  console.log(`[bundle] Bundling Main process (mode: ${isTest ? 'TEST' : isDev ? 'DEV' : 'PRODUCTION'})...`);
   await esbuild.build({
     entryPoints: [path.join(rootDir, 'src', 'main', 'index.ts')],
     outfile: path.join(rootDir, 'dist', 'main', 'index.js'),
@@ -22,8 +29,9 @@ async function buildAll() {
     target: 'node24',
     format: 'cjs',
     external: ['electron', '*.node'],
-    sourcemap: isDev ? 'inline' : true,
-    minify: !isDev,
+    sourcemap: isDev || isTest ? 'inline' : true,
+    minify: !isDev && !isTest,
+    define: defines,
     logLevel: 'info',
   });
 
