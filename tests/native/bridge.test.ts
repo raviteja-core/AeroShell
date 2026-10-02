@@ -123,12 +123,35 @@ describe('aero_win_bridge native addon', () => {
   });
 
   describe('Stress / Leak Test (10,000 calls)', () => {
+    function getHandleCount(): number {
+      try {
+        const { execFileSync } = require('node:child_process');
+        const out = execFileSync(
+          'powershell.exe',
+          ['-NoProfile', '-Command', `(Get-Process -Id ${process.pid}).HandleCount`],
+          { encoding: 'utf8' }
+        );
+        return parseInt(out.trim(), 10);
+      } catch {
+        return 0;
+      }
+    }
+
     it('executes 10,000 queries without COM leaks or handle exhaustion', () => {
+      const handlesBefore = getHandleCount();
+
       for (let i = 0; i < 10000; i++) {
         native.getSystemMemoryInfo();
         if (i % 10 === 0) {
           native.getGpuHardwareInfo();
         }
+      }
+
+      const handlesAfter = getHandleCount();
+      if (handlesBefore > 0 && handlesAfter > 0) {
+        // Assert handle growth is strictly bounded (< 50 handles delta over 10k calls)
+        const handleGrowth = handlesAfter - handlesBefore;
+        expect(handleGrowth).toBeLessThan(50);
       }
     });
   });

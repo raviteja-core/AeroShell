@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron';
 import * as path from 'node:path';
+import { registerSchemes, registerProtocolHandlers } from './protocol-handler';
 
 // 1) Single-instance lock: exit before ANY side effect.
 if (!app.requestSingleInstanceLock()) {
@@ -9,6 +10,9 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 function bootstrap(): void {
+  // Register privileged schemes BEFORE app is ready
+  registerSchemes();
+
   // Test-only software rendering flag for headless / CI runners without hardware GPUs
   if (process.env.AEROSHELL_TEST_SOFTWARE_GL === '1') {
     app.commandLine.appendSwitch('use-gl', 'angle');
@@ -16,6 +20,8 @@ function bootstrap(): void {
   }
 
   app.whenReady().then(async () => {
+    registerProtocolHandlers();
+
     const win = new BrowserWindow({
       width: 1440,
       height: 900,
@@ -40,8 +46,7 @@ function bootstrap(): void {
       win.show();
     });
 
-    // M0 loads blank page while custom protocol handlers are staged in M2
-    await win.loadURL('about:blank');
+    await win.loadURL('aeroshell-app://app/index.html');
 
     app.on('second-instance', () => {
       if (win.isMinimized()) win.restore();
