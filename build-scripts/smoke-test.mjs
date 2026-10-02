@@ -1,5 +1,6 @@
 import { _electron as electron } from '@playwright/test';
 import * as path from 'node:path';
+import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -7,9 +8,12 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 
 async function runSmokeTest() {
-  console.log('[smoke] Launching Electron app via Playwright _electron...');
+  const mainEntry = fs.existsSync(path.join(rootDir, 'dist-test', 'main', 'index.js'))
+    ? path.join(rootDir, 'dist-test', 'main', 'index.js')
+    : path.join(rootDir, 'dist', 'main', 'index.js');
+
   const app = await electron.launch({
-    args: [path.join(rootDir, 'dist', 'main', 'index.js')],
+    args: [mainEntry],
     env: {
       ...process.env,
       AEROSHELL_TEST_SOFTWARE_GL: '1',

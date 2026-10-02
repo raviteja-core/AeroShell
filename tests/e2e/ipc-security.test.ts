@@ -2,7 +2,9 @@ import { test, expect, _electron as electron, ElectronApplication, Page } from '
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 
-const mainEntry = path.resolve(process.cwd(), 'dist', 'main', 'index.js');
+const mainEntry = fs.existsSync(path.resolve(process.cwd(), 'dist-test', 'main', 'index.js'))
+  ? path.resolve(process.cwd(), 'dist-test', 'main', 'index.js')
+  : path.resolve(process.cwd(), 'dist', 'main', 'index.js');
 
 test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
   let app: ElectronApplication;
@@ -118,8 +120,16 @@ test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
     } catch {}
   });
 
-  test('IPC Security: Hostile frame (about:blank) is rejected by assertTrusted', async () => {
+  test('IPC Security: Hostile frame (about:blank) has aeroPlatform object but is rejected by assertTrusted', async () => {
     expect(hostilePage).not.toBeNull();
+
+    // Verify preload executed and exposed window.aeroPlatform on hostile page
+    const hasBridge = await hostilePage!.evaluate(() => {
+      return typeof (window as unknown as { aeroPlatform?: unknown }).aeroPlatform === 'object';
+    });
+    expect(hasBridge).toBe(true);
+
+    // Assert that invocation rejects with assertTrusted error
     const result = await hostilePage!.evaluate(async () => {
       try {
         // @ts-expect-error aeroPlatform untyped in global test context
@@ -130,22 +140,79 @@ test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
       }
     });
 
-    expect(result).toMatch(/IPC rejected/i);
+    expect(result).toMatch(/IPC rejected: (unauthorized sender frame|untrusted origin)/i);
   });
 
-  test('Navigation Gate: External navigation to untrusted URL is blocked', async () => {
-    // Attempt navigation to external URL
-    await page.evaluate(() => {
-      try {
-        window.location.href = 'https://evil.com/hack';
-      } catch {}
+  test('IPC Resilience: Calling getTelemetry() succeeds seamlessly after page.reload()', async () => {
+    await page.reload({ waitUntil: 'networkidle' });
+
+    const telemetry = await page.evaluate(async () => {
+      // @ts-expect-error aeroPlatform untyped in global test context
+      return await window.aeroPlatform.getTelemetry();
     });
 
-    // Short wait to ensure navigation event would have processed
-    await page.waitForTimeout(300);
-
-    // Page must remain on the authoritative standard origin
-    const url = page.url();
-    expect(url).toMatch(/^aeroshell-app:\/\/app\//);
+    expect(telemetry).toBeDefined();
+    expect(telemetry.gpus.length).toBeGreaterThan(0);
   });
+
+  test('Navigation Gate: External navigation to untrusted URL is blocked while in-origin navigation succeeds', async () => {
+    // 1. In-origin navigation to aeroshell-app://app/index.html succeeds
+    await page.goto('aeroshell-app://app/index.html');
+    await page.waitForLoadState('networkidle');
+    expect(page.url()).toMatch(/^aeroshell-app:\/\/app\/index\.html/);
+
+    // 2. External navigation attempt to untrusted URL is blocked by will-navigate / will-frame-navigate
+    await page.evaluate(() => {
+      const a = document.createElement('a');
+      a.href = 'https://evil.com/hack';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    });
+
+    await page.waitForTimeout(300);
+    // Page remains on authoritative standard origin
+    expect(page.url()).toMatch(/^aeroshell-app:\/\/app\//);
+  });
+
+
+
+
+  test('Window Open Gate: Allowlisted HTTPS domain invokes shell.openExternal; untrusted domain does not; both return action deny', async () => {
+    const initialWindowCount = app.windows().length;
+
+    // Stub shell.openExternal in Electron main process
+    await app.evaluate(({ shell }) => {
+      const recorded: string[] = [];
+      shell.openExternal = async (url: string) => {
+        recorded.push(url);
+      };
+      (globalThis as unknown as { __openExternalCalls?: string[] }).__openExternalCalls = recorded;
+    });
+
+    // Trigger window.open on allowlisted HTTPS domain
+    await page.evaluate(() => {
+      window.open('https://www.autodesk.com/support');
+    });
+    await page.waitForTimeout(150);
+
+    // Trigger window.open on non-allowlisted domain
+    await page.evaluate(() => {
+      window.open('https://evil.com/phish');
+    });
+    await page.waitForTimeout(150);
+
+    const recorded = await app.evaluate(() => {
+      return (globalThis as unknown as { __openExternalCalls?: string[] }).__openExternalCalls || [];
+    });
+
+    // Only allowlisted domain was passed to system browser
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toBe('https://www.autodesk.com/support');
+
+    // In both cases, action: 'deny' was enforced and no new BrowserWindow was created
+    expect(app.windows().length).toBe(initialWindowCount);
+  });
+
 });
+

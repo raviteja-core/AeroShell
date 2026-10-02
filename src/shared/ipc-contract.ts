@@ -41,12 +41,25 @@ export const V8Memory = z.object({
   heapLimitMB: z.number().finite(),
 });
 
+export const GpuFeatureStatus = z.object({
+  webgl: z.string().optional(),
+  webgl2: z.string().optional(),
+  gpu_compositing: z.string().optional(),
+});
+
+export const ActiveGpu = z.object({
+  vendorId: z.number().int().optional(),
+  deviceId: z.number().int().optional(),
+});
+
 // Telemetry output strips unknown keys by default
 export const Telemetry = z.object({
   gpus: z.array(GpuAdapter),
   system: SystemMemory,
   processes: z.array(ProcessMetric),
   v8: V8Memory,
+  gpuFeatures: GpuFeatureStatus.optional(),
+  activeGpu: ActiveGpu.optional(),
 });
 
 export const PressureEvent = z.object({

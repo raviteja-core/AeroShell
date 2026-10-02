@@ -33,5 +33,23 @@
     "node-addon-api": "8.3.1",
     "typescript": "5.8.2",
     "vitest": "3.0.7"
+  },
+  "build": {
+    "appId": "dev.yourhandle.aeroshell",
+    "productName": "AeroShell",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "!**/*.map",
+      "build/Release/aero_win_bridge.node"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
   }
 }
+

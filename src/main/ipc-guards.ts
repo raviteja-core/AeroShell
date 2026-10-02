@@ -119,13 +119,16 @@ export function handleCaptureHeapSnapshot(opts: HeapSnapshotOptions): { file: st
       .filter((f) => f.startsWith('heap-') && f.endsWith('.heapsnapshot'))
       .map((f) => {
         const fullPath = path.join(diagDir, f);
+        const match = /^heap-(\d+)-/.exec(f);
+        const fileTime = match ? parseInt(match[1], 10) : 0;
         return {
           name: f,
           fullPath,
-          mtime: fs.statSync(fullPath).mtimeMs,
+          time: fileTime || fs.statSync(fullPath).mtimeMs,
         };
       })
-      .sort((a, b) => b.mtime - a.mtime); // newest first
+      .sort((a, b) => b.time - a.time); // newest first
+
 
     if (files.length > MAX_SNAPSHOTS) {
       const toDelete = files.slice(MAX_SNAPSHOTS);

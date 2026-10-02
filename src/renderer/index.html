@@ -7,13 +7,21 @@
 <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-<div id="hud">
-  <div id="app-title"><strong>AeroShell</strong></div>
-  <div id="gpu">GPU: ...</div>
-  <div id="mem">Memory: ...</div>
-  <div id="pressure" hidden></div>
+<div id="viewport-container">
+  <div id="context-loss-banner" class="context-loss-banner hidden"></div>
+  <div id="hud">
+    <div id="app-title"><strong>AeroShell Viewport</strong></div>
+    <div id="hud-gpu">GPU: Detecting...</div>
+    <div id="hud-vram-total">VRAM total: ...</div>
+    <div id="hud-vram-budget">VRAM budget (OS): ...</div>
+    <div id="hud-fps">FPS: 0</div>
+    <div id="hud-frame-time">Frame time: 0.0 ms</div>
+    <div id="hud-metrics">Draw calls: 0 | Triangles: 0 | Geometries: 0 | Textures: 0</div>
+    <div id="hud-gpu-warning" class="gpu-warning hidden"></div>
+    <div id="hud-pressure" class="pressure-badge hidden"></div>
+  </div>
+  <canvas id="cad-canvas"></canvas>
 </div>
-<canvas id="cad-canvas"></canvas>
 <script src="./main.js"></script>
 </body>
 </html>

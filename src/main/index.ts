@@ -2,7 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import * as path from 'node:path';
 import { registerSchemes, registerProtocolHandlers } from './protocol-handler';
 import { installSessionPolicy, hardenWebContents } from './security-guard';
-import { registerIpc } from './ipc';
+import { registerIpc, fetchGpuInfoAfterReady } from './ipc';
 
 // 1) Single-instance lock: exit before ANY side effect.
 if (!app.requestSingleInstanceLock()) {
@@ -19,7 +19,9 @@ function bootstrap(): void {
   if (process.env.AEROSHELL_TEST_SOFTWARE_GL === '1') {
     app.commandLine.appendSwitch('use-gl', 'angle');
     app.commandLine.appendSwitch('use-angle', 'swiftshader');
+    app.commandLine.appendSwitch('enable-unsafe-swiftshader');
   }
+
 
   app.whenReady().then(async () => {
     registerProtocolHandlers();
@@ -50,7 +52,9 @@ function bootstrap(): void {
 
     win.once('ready-to-show', () => {
       win.show();
+      fetchGpuInfoAfterReady();
     });
+
 
     await win.loadURL('aeroshell-app://app/index.html');
 

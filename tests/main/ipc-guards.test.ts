@@ -173,11 +173,13 @@ describe('IPC Guards: handleCaptureHeapSnapshot()', () => {
     expect(filename).not.toContain('*');
   });
 
-  it('caps retained snapshot files at 5 by pruning oldest', () => {
+  it('caps retained snapshot files at 5: 6th file prunes the oldest snapshot file', () => {
     let time = 1000000;
-    for (let i = 1; i <= 7; i++) {
-      time += 65000;
-      handleCaptureHeapSnapshot({
+    const writtenFiles: string[] = [];
+
+    for (let i = 1; i <= 6; i++) {
+      time += 65000; // Step beyond 60s rate limit
+      const res = handleCaptureHeapSnapshot({
         userDataDir: tmpUserDir,
         reason: `snap-${i}`,
         isDev: true,
@@ -188,11 +190,18 @@ describe('IPC Guards: handleCaptureHeapSnapshot()', () => {
         },
         now: () => time,
       });
+      writtenFiles.push(path.basename(res.file));
     }
 
     const diagFiles = fs.readdirSync(path.join(tmpUserDir, 'Diagnostics'));
+    // Exactly 5 snapshots retained
     expect(diagFiles.length).toBe(5);
+    // Oldest snapshot (file 1) was pruned
+    expect(diagFiles).not.toContain(writtenFiles[0]);
+    // Latest snapshot (file 6) is retained
+    expect(diagFiles).toContain(writtenFiles[5]);
   });
+
 });
 
 describe('Zod Schema Strictness (SnapshotRequest)', () => {

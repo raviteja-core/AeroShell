@@ -45,17 +45,23 @@ export function hardenWebContents(wc: WebContents): void {
     }
   };
 
-  wc.on('will-navigate', (e, url) => checkNavigation(e, url || (e as unknown as { url?: string }).url || ''));
-  wc.on('will-redirect', (e, url) => checkNavigation(e, url || (e as unknown as { url?: string }).url || ''));
-  wc.on('will-frame-navigate', (e: unknown) => {
-    const eventObj = e as { url?: string; isMainFrame?: boolean; preventDefault: () => void };
-    const targetUrl = eventObj.url || '';
-    const u = parseUrl(targetUrl);
-    if (!u || !isAppUrl(u)) {
-      eventObj.preventDefault();
-      console.warn('[security] blocked frame navigation to:', targetUrl);
-    }
+  wc.on('will-navigate', (event, url) => {
+    // Explicitly check event.url from Electron's navigation event object
+    const targetUrl = (event as unknown as { url?: string }).url || url;
+    checkNavigation(event, targetUrl);
   });
+
+  wc.on('will-redirect', (event, url) => {
+    const targetUrl = (event as unknown as { url?: string }).url || url;
+    checkNavigation(event, targetUrl);
+  });
+
+  wc.on('will-frame-navigate', (event: unknown) => {
+    const eventObj = event as { url?: string; isMainFrame?: boolean; preventDefault: () => void };
+    const targetUrl = eventObj.url || '';
+    checkNavigation(eventObj as unknown as Electron.Event, targetUrl);
+  });
+
 
   wc.on('will-attach-webview', (e) => {
     e.preventDefault();

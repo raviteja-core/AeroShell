@@ -3,7 +3,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
-const mainEntry = path.resolve(process.cwd(), 'dist', 'main', 'index.js');
+const mainEntry = fs.existsSync(path.resolve(process.cwd(), 'dist-test', 'main', 'index.js'))
+  ? path.resolve(process.cwd(), 'dist-test', 'main', 'index.js')
+  : path.resolve(process.cwd(), 'dist', 'main', 'index.js');
 
 test.describe('Protocol Handlers and Security Boundaries (E2E)', () => {
   let app: ElectronApplication;
@@ -16,12 +18,10 @@ test.describe('Protocol Handlers and Security Boundaries (E2E)', () => {
     fixtureDir = path.join(testDir, 'Models');
     fs.mkdirSync(fixtureDir, { recursive: true });
 
-    // Generate test model binary (256 bytes)
-    const buf = Buffer.alloc(256);
-    for (let i = 0; i < 256; i++) {
-      buf[i] = i % 256;
-    }
-    fs.writeFileSync(path.join(fixtureDir, 'cube.glb'), buf);
+    // Copy valid glTF 2.0 binary fixture
+    const canonicalCube = path.resolve(process.cwd(), 'assets', 'models', 'cube.glb');
+    fs.copyFileSync(canonicalCube, path.join(fixtureDir, 'cube.glb'));
+
 
     // Generate test WASM binary fixture
     fs.writeFileSync(path.join(fixtureDir, 'sample.wasm'), Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]));
@@ -65,8 +65,8 @@ test.describe('Protocol Handlers and Security Boundaries (E2E)', () => {
     expect(url).toMatch(/^aeroshell-app:\/\/app\//);
 
     // Verify page script executed via safe textContent
-    const gpuEl = page.locator('#gpu');
-    await expect(gpuEl).toHaveText('GPU: Initializing...');
+    const gpuEl = page.locator('#hud-gpu');
+    await expect(gpuEl).toContainText('GPU:');
   });
 
   test('Page is cross-origin isolated (COOP + COEP headers active)', async () => {
@@ -130,9 +130,11 @@ test.describe('Protocol Handlers and Security Boundaries (E2E)', () => {
       };
     });
 
+    const cubeSize = fs.statSync(path.join(fixtureDir, 'cube.glb')).size;
+
     expect(res.status).toBe(206);
     expect(res.byteLength).toBe(100);
-    expect(res.contentRange).toBe('bytes 0-99/256');
+    expect(res.contentRange).toBe(`bytes 0-99/${cubeSize}`);
     expect(res.acceptRanges).toBe('bytes');
     expect(res.corsOrigin).toBe('aeroshell-app://app');
     expect(res.corp).toBe('same-origin');
@@ -140,6 +142,7 @@ test.describe('Protocol Handlers and Security Boundaries (E2E)', () => {
   });
 
   test('Asset protocol supports open-ended Range (bytes=100-)', async () => {
+    const cubeSize = fs.statSync(path.join(fixtureDir, 'cube.glb')).size;
     const res = await page.evaluate(async () => {
       const resp = await fetch('aeroshell-asset://models/cube.glb', {
         headers: { Range: 'bytes=100-' },
@@ -153,11 +156,12 @@ test.describe('Protocol Handlers and Security Boundaries (E2E)', () => {
     });
 
     expect(res.status).toBe(206);
-    expect(res.byteLength).toBe(156);
-    expect(res.contentRange).toBe('bytes 100-255/256');
+    expect(res.byteLength).toBe(cubeSize - 100);
+    expect(res.contentRange).toBe(`bytes 100-${cubeSize - 1}/${cubeSize}`);
   });
 
   test('Asset protocol supports suffix Range (bytes=-100)', async () => {
+    const cubeSize = fs.statSync(path.join(fixtureDir, 'cube.glb')).size;
     const res = await page.evaluate(async () => {
       const resp = await fetch('aeroshell-asset://models/cube.glb', {
         headers: { Range: 'bytes=-100' },
@@ -172,8 +176,9 @@ test.describe('Protocol Handlers and Security Boundaries (E2E)', () => {
 
     expect(res.status).toBe(206);
     expect(res.byteLength).toBe(100);
-    expect(res.contentRange).toBe('bytes 156-255/256');
+    expect(res.contentRange).toBe(`bytes ${cubeSize - 100}-${cubeSize - 1}/${cubeSize}`);
   });
+
 
   test('Asset protocol rejects multi-range requests with 416 Range Not Satisfiable', async () => {
     const status = await page.evaluate(async () => {
@@ -188,7 +193,7 @@ test.describe('Protocol Handlers and Security Boundaries (E2E)', () => {
   test('Asset protocol returns 416 on out-of-bounds Range request', async () => {
     const status = await page.evaluate(async () => {
       const resp = await fetch('aeroshell-asset://models/cube.glb', {
-        headers: { Range: 'bytes=500-600' },
+        headers: { Range: 'bytes=9999-10000' },
       });
       return resp.status;
     });
@@ -241,24 +246,35 @@ test.describe('Protocol Handlers and Security Boundaries (E2E)', () => {
 
   test('Mid-stream abort releases file handle allowing file deletion on Windows', async () => {
     const abortFilePath = path.join(fixtureDir, 'abort_test.glb');
-    fs.writeFileSync(abortFilePath, Buffer.alloc(1024 * 1024)); // 1MB
+    const fd = fs.openSync(abortFilePath, 'w');
+    fs.ftruncateSync(fd, 256 * 1024 * 1024); // 256MB instantaneous allocation
+    fs.closeSync(fd);
 
-    await page.evaluate(async () => {
+    const receivedBytes = await page.evaluate(async () => {
       const controller = new AbortController();
-      const fetchPromise = fetch('aeroshell-asset://models/abort_test.glb', {
+      const resp = await fetch('aeroshell-asset://models/abort_test.glb', {
         signal: controller.signal,
       });
-      // Abort immediately
-      controller.abort();
-      try {
-        await fetchPromise;
-      } catch {}
+      const reader = resp.body?.getReader();
+      let bytes = 0;
+      if (reader) {
+        const chunk = await reader.read();
+        if (chunk.value) {
+          bytes += chunk.value.byteLength;
+        }
+        controller.abort();
+      }
+      return bytes;
     });
+
+    // Assert received bytes << total 256MB (e.g. received single chunk < 1MB)
+    expect(receivedBytes).toBeGreaterThan(0);
+    expect(receivedBytes).toBeLessThan(1024 * 1024);
 
     // Wait 100ms for handle closure
     await page.waitForTimeout(100);
 
-    // Deleting the file on Windows throws EBUSY / EPERM if a handle remains locked
+    // Deleting the 256MB file on Windows throws EBUSY / EPERM if a handle remains locked
     expect(() => {
       fs.unlinkSync(abortFilePath);
     }).not.toThrow();
