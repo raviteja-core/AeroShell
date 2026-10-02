@@ -170,7 +170,108 @@ export function handleCaptureHeapSnapshot(
   return { file: (typeof writeResult === 'string' && writeResult) ? writeResult : targetFile };
 }
 
+let lastTracingTime = 0;
+const MAX_TRACES = 3;
+
+export interface ContentTracingOptions {
+  durationSeconds: number;
+  userDataDir: string;
+  isDev: boolean;
+  readRegistry: (hive: number, key: string) => string | number | null;
+  recordTracing: (targetFile: string, durationSeconds: number) => Promise<string>;
+  now?: () => number;
+}
+
+export async function handleCaptureContentTracing(
+  opts: ContentTracingOptions
+): Promise<{ filePath: string }> {
+  // 1. Diagnostics authorization check
+  let regPolicy: string | number | null = null;
+  try {
+    regPolicy = opts.readRegistry(1, 'EnableDiagnostics');
+  } catch {
+    regPolicy = null;
+  }
+
+  const diagnosticsAllowed = opts.isDev || regPolicy === 1;
+  if (!diagnosticsAllowed) {
+    throw new Error('Diagnostics disabled by policy');
+  }
+
+  // 2. Validate duration: max 10s, min 1s
+  if (!Number.isInteger(opts.durationSeconds) || opts.durationSeconds < 1 || opts.durationSeconds > 10) {
+    throw new Error('Invalid tracing duration: must be an integer between 1 and 10 seconds');
+  }
+
+  // 3. Rate limiting: 1 trace per 60 seconds
+  const currentTime = opts.now ? opts.now() : Date.now();
+  if (currentTime - lastTracingTime < RATE_LIMIT_MS) {
+    const waitSec = Math.ceil((RATE_LIMIT_MS - (currentTime - lastTracingTime)) / 1000);
+    throw new Error(`Rate limit exceeded: please wait ${waitSec}s before capturing another trace`);
+  }
+
+  // 4. Free disk space verification (minimum 50 MB required)
+  if (typeof (fs as any).statfsSync === 'function') {
+    try {
+      if (fs.existsSync(opts.userDataDir)) {
+        const stats = (fs as any).statfsSync(opts.userDataDir);
+        const freeMB = (stats.bavail * stats.bsize) / (1024 * 1024);
+        if (freeMB < 50) {
+          throw new Error(`Insufficient disk space: ${Math.round(freeMB)} MB available, minimum 50 MB required`);
+        }
+      }
+    } catch (err: any) {
+      if (err?.message?.includes('Insufficient disk space')) {
+        throw err;
+      }
+    }
+  }
+
+  // 5. Prepare destination directory and filename
+  const diagDir = path.join(opts.userDataDir, 'Diagnostics');
+  fs.mkdirSync(diagDir, { recursive: true });
+
+  const targetFile = path.join(diagDir, `trace-${currentTime}.json`);
+
+  const pruneOldTraces = () => {
+    try {
+      const files = fs
+        .readdirSync(diagDir)
+        .filter((f) => f.startsWith('trace-') && f.endsWith('.json'))
+        .map((f) => {
+          const fullPath = path.join(diagDir, f);
+          const match = /^trace-(\d+)/.exec(f);
+          const fileTime = match && match[1] ? parseInt(match[1], 10) : 0;
+          return {
+            name: f,
+            fullPath,
+            time: fileTime || fs.statSync(fullPath).mtimeMs,
+          };
+        })
+        .sort((a, b) => b.time - a.time);
+
+      if (files.length > MAX_TRACES) {
+        const toDelete = files.slice(MAX_TRACES);
+        for (const item of toDelete) {
+          try {
+            fs.unlinkSync(item.fullPath);
+          } catch {}
+        }
+      }
+    } catch (err) {
+      console.warn('[diagnostics] Failed to prune trace files:', err);
+    }
+  };
+
+  const actualPath = await opts.recordTracing(targetFile, opts.durationSeconds);
+  lastTracingTime = currentTime;
+  pruneOldTraces();
+
+  return { filePath: actualPath || targetFile };
+}
+
 /** Reset internal rate limiter state (useful for test isolation) */
 export function _resetRateLimiter(): void {
   lastSnapshotTime = 0;
+  lastTracingTime = 0;
 }

@@ -1,6 +1,7 @@
 import { test, expect, _electron as electron, ElectronApplication, Page } from '@playwright/test';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 
 const mainEntry = fs.existsSync(path.resolve(process.cwd(), 'dist-test', 'main', 'index.js'))
   ? path.resolve(process.cwd(), 'dist-test', 'main', 'index.js')
@@ -10,8 +11,10 @@ test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
   let app: ElectronApplication;
   let page: Page;
   let hostilePage: Page | null = null;
+  let tempUserData: string;
 
   test.beforeAll(async () => {
+    tempUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'aeroshell-ipc-e2e-'));
     app = await electron.launch({
       args: [mainEntry],
       env: {
@@ -19,6 +22,7 @@ test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
         AEROSHELL_TEST_SOFTWARE_GL: '1',
         AEROSHELL_TEST: '1',
         AEROSHELL_TEST_CREATE_HOSTILE_WINDOW: '1',
+        AEROSHELL_TEST_USER_DATA: tempUserData,
       },
     });
 
@@ -36,6 +40,11 @@ test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
     if (app) {
       await app.close();
     }
+    if (tempUserData) {
+      try {
+        fs.rmSync(tempUserData, { recursive: true, force: true });
+      } catch {}
+    }
   });
 
   test('Preload contract: window.aeroPlatform exposed keys match allowlist exactly', async () => {
@@ -44,7 +53,13 @@ test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
       return Object.keys(window.aeroPlatform || {}).sort();
     });
 
-    expect(keys).toEqual(['captureHeapSnapshot', 'getTelemetry', 'onMemoryPressure', 'onWindowState']);
+    expect(keys).toEqual([
+      'captureContentTracing',
+      'captureHeapSnapshot',
+      'getTelemetry',
+      'onMemoryPressure',
+      'onWindowState',
+    ]);
   });
 
   test('Preload isolation: Node primitives are strictly undefined in renderer', async () => {
@@ -127,6 +142,44 @@ test.describe('IPC Layer, Preload Contract & Security Gates (E2E)', () => {
     // Clean up created snapshot
     try {
       fs.unlinkSync(res.file);
+    } catch {}
+  });
+
+  test('IPC captureContentTracing: records trace, outputs valid JSON with traceEvents, and enforces rate limit', async () => {
+    // 1. Valid trace recording (1 second)
+    const res = await page.evaluate(async () => {
+      // @ts-expect-error aeroPlatform untyped in global test context
+      return await window.aeroPlatform.captureContentTracing(1);
+    });
+
+    expect(res).toBeDefined();
+    expect(typeof res.filePath).toBe('string');
+    expect(fs.existsSync(res.filePath)).toBe(true);
+
+    const content = fs.readFileSync(res.filePath, 'utf8');
+    const parsed = JSON.parse(content);
+    expect(parsed).toBeDefined();
+    expect(Array.isArray(parsed.traceEvents) || Array.isArray(parsed)).toBe(true);
+
+    // 2. Negative test: rate limit (second call within 60s is rejected)
+    await expect(
+      page.evaluate(async () => {
+        // @ts-expect-error aeroPlatform untyped in global test context
+        return await window.aeroPlatform.captureContentTracing(1);
+      })
+    ).rejects.toThrow(/rate limit exceeded/i);
+
+    // 3. Negative test: invalid duration (>10s) rejected
+    await expect(
+      page.evaluate(async () => {
+        // @ts-expect-error aeroPlatform untyped in global test context
+        return await window.aeroPlatform.captureContentTracing(15);
+      })
+    ).rejects.toThrow();
+
+    // Clean up trace file
+    try {
+      fs.unlinkSync(res.filePath);
     } catch {}
   });
 

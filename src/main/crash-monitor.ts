@@ -2,6 +2,7 @@ import { app, BrowserWindow, crashReporter, Details, RenderProcessGoneDetails } 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { GpuFallbackTracker, armGpuFallback } from './gpu-fallback-policy';
+import { evaluateRenderProcessGone, RenderProcessGoneReason } from './crash-policy';
 
 const MAX_LOG_SIZE_BYTES = 1024 * 1024; // 1 MB rotation threshold
 const MAX_LOG_FILES = 3;
@@ -96,20 +97,22 @@ export class CrashMonitor {
         exitCode: details.exitCode,
       });
 
-      const now = Date.now();
-      this.rendererCrashTimes.push(now);
-      this.rendererCrashTimes = this.rendererCrashTimes.filter((t) => now - t <= CRASH_WINDOW_MS);
+      const { action, updatedHistory } = evaluateRenderProcessGone(
+        details.reason as RenderProcessGoneReason,
+        this.rendererCrashTimes
+      );
+      this.rendererCrashTimes = updatedHistory;
 
-      if (this.rendererCrashTimes.length <= MAX_RENDERER_CRASHES) {
+      if (action.type === 'ignore') {
+        console.log(`[crash-monitor] Renderer clean exit ignored.`);
+      } else if (action.type === 'error-page') {
+        console.error(`[crash-monitor] Renderer error: ${action.reason}. Loading error page: ${action.url}`);
+        void this.win.loadURL(action.url);
+      } else if (action.type === 'reload') {
         console.warn(
-          `[crash-monitor] Renderer terminated (${details.reason}). Recovering window (attempt ${this.rendererCrashTimes.length}/${MAX_RENDERER_CRASHES})...`
+          `[crash-monitor] Renderer terminated (${details.reason}). Recovering window (attempt ${action.attempt}/${action.maxAttempts}, safeMode=${action.safeMode})...`
         );
         this.win.webContents.reload();
-      } else {
-        console.error(
-          `[crash-monitor] Renderer crash loop exceeded limit (${this.rendererCrashTimes.length} crashes in 5m). Loading static fallback error page.`
-        );
-        void this.win.loadURL('aeroshell-app://app/crash-error.html');
       }
     });
 
@@ -123,12 +126,16 @@ export class CrashMonitor {
       });
 
       if (details.type === 'GPU') {
-        const armed = this.gpuTracker.recordCrash();
-        if (armed) {
-          console.error(
-            '[crash-monitor] GPU process crashed 3 times in 5 minutes. Arming software fallback for subsequent launch.'
-          );
-          armGpuFallback(userData, process.versions.electron);
+        // Count crashed, killed, and abnormal-exit towards GPU fallback arming
+        const eligibleReasons = ['crashed', 'killed', 'abnormal-exit'];
+        if (eligibleReasons.includes(details.reason)) {
+          const armed = this.gpuTracker.recordCrash();
+          if (armed) {
+            console.error(
+              '[crash-monitor] GPU process terminated repeatedly (3 times in 5m). Arming software fallback for subsequent launch.'
+            );
+            armGpuFallback(userData, process.versions.electron);
+          }
         }
       }
     });

@@ -30,6 +30,7 @@ const hudFrameTime = document.getElementById('hud-frame-time');
 const hudMetrics = document.getElementById('hud-metrics');
 const hudGpuWarning = document.getElementById('hud-gpu-warning');
 const hudPressure = document.getElementById('hud-pressure');
+const hudCacheStats = document.getElementById('hud-cache-stats');
 
 // 2. Initialize CadViewport
 const viewport = new CadViewport(canvas, banner);
@@ -173,6 +174,10 @@ function updateMetricsHud(): void {
   }
   if (hudMetrics) {
     hudMetrics.textContent = `Draw calls: ${m.drawCalls} | Triangles: ${m.triangles} | Geometries: ${m.geometries} | Textures: ${m.textures}`;
+  }
+  if (hudCacheStats) {
+    const cs = viewport.getModelCacheStats();
+    hudCacheStats.textContent = `Models cached: ${cs.count} (${cs.totalEstimatedMB.toFixed(2)} MB)`;
   }
 }
 

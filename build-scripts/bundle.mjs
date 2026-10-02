@@ -27,6 +27,10 @@ async function buildAll() {
         'process.env.AEROSHELL_TEST_MODEL_ROOT': 'undefined',
         'process.env.AEROSHELL_TEST_CREATE_HOSTILE_WINDOW': 'undefined',
         'process.env.AEROSHELL_TEST_FORCE_RAM_PRESSURE': 'undefined',
+        'process.env.AEROSHELL_TEST_USER_DATA': 'undefined',
+        'process.env.AEROSHELL_TEST_LEAK_JS_HEAP': 'undefined',
+        'process.env.AEROSHELL_TEST_LEAK_GPU': 'undefined',
+        'process.env.AEROSHELL_TEST_LEAK_DOM': 'undefined',
       };
 
   console.log(`[bundle] Bundling Main process (out: ${path.basename(outBase)}, mode: ${isTest ? 'TEST' : isDev ? 'DEV' : 'PRODUCTION'})...`);
@@ -91,6 +95,18 @@ async function buildAll() {
     logLevel: 'info',
   });
 
+  if (isTest) {
+    await esbuild.build({
+      entryPoints: [path.join(rootDir, 'src', 'soak', 'index.ts')],
+      outfile: path.join(outBase, 'soak', 'index.mjs'),
+      bundle: true,
+      platform: 'node',
+      target: 'node24',
+      format: 'esm',
+      sourcemap: 'inline',
+    });
+  }
+
   console.log('[bundle] Copying static renderer assets...');
   if (fs.existsSync(path.join(rootDir, 'src', 'renderer', 'index.html'))) {
     fs.copyFileSync(
@@ -109,6 +125,20 @@ async function buildAll() {
       path.join(rootDir, 'src', 'renderer', 'crash-error.html'),
       path.join(outBase, 'renderer', 'crash-error.html')
     );
+  }
+
+  // Copy Draco decoder files from installed three package
+  const dracoSrcDir = path.join(rootDir, 'node_modules', 'three', 'examples', 'jsm', 'libs', 'draco', 'gltf');
+  const dracoDestDir = path.join(outBase, 'renderer', 'draco');
+  if (fs.existsSync(dracoSrcDir)) {
+    fs.mkdirSync(dracoDestDir, { recursive: true });
+    for (const f of ['draco_decoder.js', 'draco_decoder.wasm', 'draco_wasm_wrapper.js']) {
+      const srcFile = path.join(dracoSrcDir, f);
+      if (fs.existsSync(srcFile)) {
+        fs.copyFileSync(srcFile, path.join(dracoDestDir, f));
+      }
+    }
+    console.log('[bundle] Copied Draco decoder assets to renderer/draco/');
   }
 
   // Measure renderer bundle size

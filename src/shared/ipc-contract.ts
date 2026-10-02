@@ -4,6 +4,7 @@ export const Channels = {
   getTelemetry: 'aeroshell:get-telemetry',
   memoryPressure: 'aeroshell:memory-pressure',
   captureHeapSnapshot: 'aeroshell:capture-heap-snapshot',
+  captureContentTracing: 'aeroshell:capture-content-tracing',
   windowState: 'aeroshell:window-state',
 } as const;
 
@@ -86,3 +87,15 @@ export const SnapshotRequest = z.object({
 }).strict();
 
 export type SnapshotRequest = z.infer<typeof SnapshotRequest>;
+
+export const CaptureContentTracingRequest = z.object({
+  durationSeconds: z.number().int().min(1).max(10),
+}).strict();
+
+export type CaptureContentTracingRequest = z.infer<typeof CaptureContentTracingRequest>;
+
+export const CaptureContentTracingResponse = z.object({
+  filePath: z.string(),
+}).strict();
+
+export type CaptureContentTracingResponse = z.infer<typeof CaptureContentTracingResponse>;

@@ -43,6 +43,7 @@ test.describe('Protocol Handlers and Security Boundaries (E2E)', () => {
         AEROSHELL_TEST_SOFTWARE_GL: '1',
         AEROSHELL_TEST: '1',
         AEROSHELL_TEST_MODEL_ROOT: fixtureDir,
+        AEROSHELL_TEST_USER_DATA: path.join(testDir, 'userData'),
       },
     });
 

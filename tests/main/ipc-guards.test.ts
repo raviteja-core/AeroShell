@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import {
   assertTrusted,
   handleCaptureHeapSnapshot,
+  handleCaptureContentTracing,
   _resetRateLimiter,
   MinimalFrame,
   MinimalWindow,
@@ -225,5 +226,139 @@ describe('Zod Schema Strictness (SnapshotRequest)', () => {
         reason: 'a'.repeat(81),
       });
     }).toThrow();
+  });
+});
+
+describe('IPC Guards: handleCaptureContentTracing()', () => {
+  let tmpUserDir: string;
+
+  beforeEach(() => {
+    _resetRateLimiter();
+    tmpUserDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aeroshell-tracing-test-'));
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpUserDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it('rejects capture in production mode when policy is disabled', async () => {
+    await expect(
+      handleCaptureContentTracing({
+        userDataDir: tmpUserDir,
+        durationSeconds: 2,
+        isDev: false,
+        readRegistry: () => null,
+        recordTracing: async (f) => f,
+      })
+    ).rejects.toThrow(/diagnostics disabled by policy/i);
+  });
+
+  it('allows capture in production mode when EnableDiagnostics DWORD is 1', async () => {
+    const res = await handleCaptureContentTracing({
+      userDataDir: tmpUserDir,
+      durationSeconds: 2,
+      isDev: false,
+      readRegistry: (_area, name) => (name === 'EnableDiagnostics' ? 1 : null),
+      recordTracing: async (f) => {
+        fs.writeFileSync(f, '{"traceEvents":[]}');
+        return f;
+      },
+    });
+
+    expect(fs.existsSync(res.filePath)).toBe(true);
+  });
+
+  it('strictly rejects invalid duration (<1 or >10)', async () => {
+    await expect(
+      handleCaptureContentTracing({
+        userDataDir: tmpUserDir,
+        durationSeconds: 0,
+        isDev: true,
+        readRegistry: () => null,
+        recordTracing: async (f) => f,
+      })
+    ).rejects.toThrow(/invalid tracing duration/i);
+
+    await expect(
+      handleCaptureContentTracing({
+        userDataDir: tmpUserDir,
+        durationSeconds: 15,
+        isDev: true,
+        readRegistry: () => null,
+        recordTracing: async (f) => f,
+      })
+    ).rejects.toThrow(/invalid tracing duration/i);
+  });
+
+  it('enforces 60-second rate limiting', async () => {
+    let mockTime = 100000;
+    await handleCaptureContentTracing({
+      userDataDir: tmpUserDir,
+      durationSeconds: 2,
+      isDev: true,
+      readRegistry: () => null,
+      recordTracing: async (f) => {
+        fs.writeFileSync(f, '{}');
+        return f;
+      },
+      now: () => mockTime,
+    });
+
+    // 10 seconds later: should reject
+    mockTime += 10000;
+    await expect(
+      handleCaptureContentTracing({
+        userDataDir: tmpUserDir,
+        durationSeconds: 2,
+        isDev: true,
+        readRegistry: () => null,
+        recordTracing: async (f) => f,
+        now: () => mockTime,
+      })
+    ).rejects.toThrow(/rate limit exceeded/i);
+
+    // 65 seconds later: should pass
+    mockTime += 55000;
+    const res2 = await handleCaptureContentTracing({
+      userDataDir: tmpUserDir,
+      durationSeconds: 2,
+      isDev: true,
+      readRegistry: () => null,
+      recordTracing: async (f) => {
+        fs.writeFileSync(f, '{}');
+        return f;
+      },
+      now: () => mockTime,
+    });
+    expect(fs.existsSync(res2.filePath)).toBe(true);
+  });
+
+  it('retains maximum of 3 trace files and rotates oldest', async () => {
+    let time = 100000;
+    const writtenFiles: string[] = [];
+
+    for (let i = 1; i <= 5; i++) {
+      time += 65000;
+      const res = await handleCaptureContentTracing({
+        userDataDir: tmpUserDir,
+        durationSeconds: 2,
+        isDev: true,
+        readRegistry: () => null,
+        recordTracing: async (f) => {
+          fs.writeFileSync(f, `TRACE_${i}`);
+          return f;
+        },
+        now: () => time,
+      });
+      writtenFiles.push(path.basename(res.filePath));
+    }
+
+    const diagFiles = fs.readdirSync(path.join(tmpUserDir, 'Diagnostics'));
+    expect(diagFiles.length).toBe(3);
+    expect(diagFiles).not.toContain(writtenFiles[0]);
+    expect(diagFiles).not.toContain(writtenFiles[1]);
+    expect(diagFiles).toContain(writtenFiles[4]);
   });
 });

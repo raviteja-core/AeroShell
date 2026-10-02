@@ -26,6 +26,8 @@ export class PressureWatchdog {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private isDisposed = false;
+  private isWarm = false;
+  private tickDurations: number[] = [];
 
   constructor(opts: WatchdogOptions) {
     this.win = opts.win;
@@ -59,6 +61,20 @@ export class PressureWatchdog {
     return { ...this.state };
   }
 
+  public getTickMetrics(): { p50: number; p95: number; samples: number[] } {
+    if (this.tickDurations.length === 0) {
+      return { p50: 0, p95: 0, samples: [] };
+    }
+    const sorted = [...this.tickDurations].sort((a, b) => a - b);
+    const p50 = sorted[Math.floor(sorted.length * 0.5)] ?? 0;
+    const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? sorted[sorted.length - 1] ?? 0;
+    return {
+      p50: Number(p50.toFixed(2)),
+      p95: Number(p95.toFixed(2)),
+      samples: [...this.tickDurations],
+    };
+  }
+
   private scheduleNextTick(delayMs: number): void {
     if (!this.running || this.isDisposed || this.win.isDestroyed()) return;
 
@@ -78,6 +94,7 @@ export class PressureWatchdog {
 
   public async tick(): Promise<void> {
     if (this.isDisposed || this.win.isDestroyed()) return;
+    const t0 = performance.now();
 
     try {
       const native = this.getNative();
@@ -160,6 +177,16 @@ export class PressureWatchdog {
       }
     } catch (err) {
       console.warn('[watchdog] Error evaluating memory pressure:', err);
+    } finally {
+      const elapsed = performance.now() - t0;
+      if (this.isWarm) {
+        this.tickDurations.push(elapsed);
+        if (this.tickDurations.length > 100) {
+          this.tickDurations.shift();
+        }
+      } else {
+        this.isWarm = true;
+      }
     }
   }
 }

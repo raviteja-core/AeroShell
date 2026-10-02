@@ -9,6 +9,9 @@ const api = Object.freeze({
   captureHeapSnapshot: async (reason: string): Promise<{ file: string }> => {
     return ipcRenderer.invoke(Channels.captureHeapSnapshot, { reason });
   },
+  captureContentTracing: async (durationSeconds: number): Promise<{ filePath: string }> => {
+    return ipcRenderer.invoke(Channels.captureContentTracing, { durationSeconds });
+  },
   onMemoryPressure: (cb: (e: PressureEvent) => void): (() => void) => {
     const handler = (_event: IpcRendererEvent, raw: unknown) => {
       const parsed = PressureEvent.safeParse(raw);

@@ -8,6 +8,15 @@ import { isGpuFallbackActive } from './gpu-fallback-policy';
 import { PressureWatchdog } from './watchdog';
 import { Channels } from '../shared/ipc-contract';
 
+app.name = 'AeroShell';
+app.setName('AeroShell');
+
+// Test-only isolated userData directory override for E2E testing
+if (process.env.AEROSHELL_TEST_USER_DATA) {
+  app.setPath('userData', process.env.AEROSHELL_TEST_USER_DATA);
+  app.setPath('crashDumps', path.join(process.env.AEROSHELL_TEST_USER_DATA, 'Crashpad'));
+}
+
 // 1) Single-instance lock: exit before ANY side effect.
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
@@ -75,6 +84,8 @@ function bootstrap(): void {
       getActiveGpu: getActiveGpuDevice,
     });
     watchdog.start();
+    (global as any).__watchdog = watchdog;
+    (global as any).__getNativeAddon = getNativeAddon;
 
     // Window state IPC emitter (Zod-validated channel)
     const sendWindowState = (state: 'normal' | 'minimized' | 'maximized' | 'hidden') => {

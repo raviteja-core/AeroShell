@@ -1,6 +1,7 @@
 import { test, expect, _electron as electron, ElectronApplication, Page } from '@playwright/test';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 
 const mainEntry = fs.existsSync(path.resolve(process.cwd(), 'dist-test', 'main', 'index.js'))
   ? path.resolve(process.cwd(), 'dist-test', 'main', 'index.js')
@@ -9,16 +10,19 @@ const mainEntry = fs.existsSync(path.resolve(process.cwd(), 'dist-test', 'main',
 test.describe('WebGL Viewport, HUD, Context Loss & GPU Truth Check (E2E)', () => {
   let app: ElectronApplication;
   let page: Page;
+  let tempUserData: string;
 
   test.beforeAll(async () => {
-    // Launch Electron in normal hardware acceleration mode
+    // Launch Electron in normal hardware acceleration mode with isolated temp profile
     const modelRoot = path.resolve(process.cwd(), 'assets', 'models');
+    tempUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'aeroshell-viewport-e2e-'));
     app = await electron.launch({
       args: [mainEntry],
       env: {
         ...process.env,
         AEROSHELL_TEST: '1',
         AEROSHELL_TEST_MODEL_ROOT: modelRoot,
+        AEROSHELL_TEST_USER_DATA: tempUserData,
       },
     });
 
@@ -61,6 +65,11 @@ test.describe('WebGL Viewport, HUD, Context Loss & GPU Truth Check (E2E)', () =>
     if (app) {
       await app.close();
     }
+    if (tempUserData) {
+      try {
+        fs.rmSync(tempUserData, { recursive: true, force: true });
+      } catch {}
+    }
   });
 
   test('HUD renders FPS, ms frame times (p50/p95), VRAM total, and VRAM budget (OS)', async () => {
@@ -102,7 +111,11 @@ test.describe('WebGL Viewport, HUD, Context Loss & GPU Truth Check (E2E)', () =>
     expect(isWorkerOk).toBe(true);
   });
 
-  test('GPU truth check: normal physical machine run does NOT show software-GL warning', async () => {
+  test('@hardware GPU truth check: normal physical machine run does NOT show software-GL warning', async () => {
+    if (process.env.AEROSHELL_TEST_SOFTWARE_GL === '1') {
+      test.skip(true, 'Skipping physical GPU check under AEROSHELL_TEST_SOFTWARE_GL=1 (software GL active)');
+      return;
+    }
     await page.waitForTimeout(500);
 
     const warningState = await page.evaluate(() => {
@@ -134,6 +147,44 @@ test.describe('WebGL Viewport, HUD, Context Loss & GPU Truth Check (E2E)', () =>
     expect(metrics).toBeDefined();
     expect(metrics!.geometries).toBeGreaterThan(0);
     expect(metrics!.triangles).toBeGreaterThan(0);
+  });
+
+  test('Draco mesh loading: loads high-poly fixture under strict CSP with 0 violations and under COEP', async () => {
+    // 1. Verify crossOriginIsolated (COEP)
+    const isIsolated = await page.evaluate(() => window.crossOriginIsolated);
+    expect(isIsolated).toBe(true);
+
+    // 2. Set up CSP violation listener
+    await page.evaluate(() => {
+      (window as any).__dracoCspViolations = [];
+      window.addEventListener('securitypolicyviolation', (e) => {
+        (window as any).__dracoCspViolations.push({
+          violatedDirective: e.violatedDirective,
+          blockedURI: e.blockedURI,
+        });
+      });
+    });
+
+    // 3. Load highpoly-draco.glb and measure load time
+    const t0 = Date.now();
+    const loadResult = await page.evaluate(async () => {
+      const vp = (window as any).__cadViewport;
+      if (!vp) return null;
+      await vp.loadModelFromAsset('aeroshell-asset://models/highpoly-draco.glb');
+      return vp.getMetrics();
+    });
+    const loadTimeMs = Date.now() - t0;
+
+    expect(loadResult).toBeDefined();
+    // High-poly torus knot has 200,000 triangles
+    expect(loadResult.triangles).toBeGreaterThanOrEqual(200000);
+    expect(loadResult.geometries).toBeGreaterThan(0);
+
+    // 4. Assert zero CSP violations occurred during Draco wasm decoding
+    const violations = await page.evaluate(() => (window as any).__dracoCspViolations);
+    expect(violations).toHaveLength(0);
+
+    console.log(`[draco-e2e] Loaded 200,000-triangle Draco model in ${loadTimeMs}ms (triangles: ${loadResult.triangles})`);
   });
 
   test('Context loss & recovery: loseContext() pauses loop and displays banner; restoreContext() resumes loop and restores geometries', async () => {
@@ -273,10 +324,60 @@ test.describe('WebGL Viewport, HUD, Context Loss & GPU Truth Check (E2E)', () =>
       };
     });
 
-    expect(criticalState.pixelRatio).toBe(1);
+    expect(criticalState.pixelRatio).toBe(0.75);
     expect(criticalState.hasContainerCritical).toBe(true);
     expect(criticalState.badgeText).toContain('PRESSURE: CRITICAL');
     expect(criticalState.evictCount).toBeGreaterThan(0);
+  });
+
+  test('ModelCache: CRITICAL pressure evicts unreferenced models and drops renderer geometries', async () => {
+    const preTestMetrics = await page.evaluate(() => (window as any).__cadViewport.getMetrics());
+    console.log('[model-cache-test] Pre-test metrics:', JSON.stringify(preTestMetrics));
+
+    // 1. Load model into cache
+    await page.evaluate(async () => {
+      const vp = (window as any).__cadViewport;
+      await vp.loadModelFromAsset('aeroshell-asset://models/cube.glb', true);
+    });
+
+    const initialMetrics = await page.evaluate(() => (window as any).__cadViewport.getMetrics());
+    console.log('[model-cache-test] Initial metrics after load:', JSON.stringify(initialMetrics));
+    expect(initialMetrics.geometries).toBeGreaterThan(0);
+
+    // 2. Remove active model from scene (cache refCount drops to 0, eligible for eviction)
+    await page.evaluate(() => {
+      const vp = (window as any).__cadViewport;
+      vp.setActiveModel(null);
+    });
+
+    const afterRemoveMetrics = await page.evaluate(() => (window as any).__cadViewport.getMetrics());
+    console.log('[model-cache-test] Metrics after setActiveModel(null):', JSON.stringify(afterRemoveMetrics));
+
+    // 3. Emit CRITICAL memory pressure -> invokes modelCache.evict()
+    await app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      win.webContents.send('aeroshell:memory-pressure', {
+        severity: 'CRITICAL',
+        reasons: ['VRAM budget exhausted'],
+        availPhysMB: 100,
+        vramUsagePct: 98,
+      });
+    });
+
+    await page.waitForTimeout(300);
+
+    const postEvictMetrics = await page.evaluate(() => {
+      const vp = (window as any).__cadViewport;
+      return {
+        metrics: vp.getMetrics(),
+        cacheStats: vp.getModelCacheStats(),
+      };
+    });
+    console.log('[model-cache-test] Post-evict metrics:', JSON.stringify(postEvictMetrics));
+
+    // Geometries drop and cached models drop to 0
+    expect(postEvictMetrics.metrics.geometries).toBeLessThanOrEqual(initialMetrics.geometries - 1);
+    expect(postEvictMetrics.cacheStats.count).toBe(0);
   });
 
   test('Strict CSP Cleanliness: zero SecurityPolicyViolation events across entire lifecycle', async () => {

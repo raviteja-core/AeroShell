@@ -11,6 +11,9 @@ import {
   Object3D,
 } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { computeTargetPixelRatio } from './pixel-ratio';
+import { ModelCache, disposeHierarchy } from './model-cache';
 
 export interface ViewportMetrics {
   fps: number;
@@ -342,26 +345,28 @@ export class CadViewport {
     };
   }
 
+  // Model cache (LRU with byte budget and full disposal)
+  public modelCache: ModelCache = new ModelCache();
+  private testLeakConfig = { jsHeapKb: 0, gpu: false, dom: false };
+
   public setPressure(level: 'NORMAL' | 'WARN' | 'CRITICAL'): void {
     const container = this.canvas.parentElement ?? this.canvas;
     container.classList.remove('pressure-warn', 'pressure-critical');
 
+    const targetRatio = computeTargetPixelRatio(level, window.devicePixelRatio || 1);
+    this.renderer.setPixelRatio(targetRatio);
+    this.resize();
+
     if (level === 'WARN') {
       container.classList.add('pressure-warn');
-      this.renderer.setPixelRatio(1);
-      this.resize();
     } else if (level === 'CRITICAL') {
       container.classList.add('pressure-critical');
-      this.renderer.setPixelRatio(1);
-      this.resize();
+      // Evict unreferenced cached models to release GPU geometry/texture buffers
+      this.modelCache.evict();
       if (this.onEvictOptionalCaches) {
         this.onEvictOptionalCaches();
       }
-    } else {
-      // NORMAL
-      const baseRatio = Math.min(window.devicePixelRatio || 1, 2);
-      this.renderer.setPixelRatio(baseRatio);
-      this.resize();
+      this.renderer.render(this.scene, this.camera);
     }
   }
 
@@ -370,59 +375,130 @@ export class CadViewport {
   }
 
   /**
-   * Load model asset from secure custom protocol and verify off-thread worker transfer
+   * Load model asset from secure custom protocol and verify off-thread worker transfer.
+   * Integrates DRACOLoader and ModelCache.
    */
-  public async loadModelFromAsset(assetUrl: string): Promise<void> {
+  public async loadModelFromAsset(assetUrl: string, cacheEnabled = true): Promise<Object3D> {
     this.modelUrl = assetUrl;
 
-    const resp = await fetch(assetUrl);
-    if (!resp.ok) {
-      throw new Error(`Failed to load asset from ${assetUrl}: HTTP ${resp.status}`);
+    const loaderFn = async (url: string): Promise<Object3D> => {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        throw new Error(`Failed to load asset from ${url}: HTTP ${resp.status}`);
+      }
+
+      const buffer = await resp.arrayBuffer();
+
+      // 1. Verify off-thread worker communication with transferable ArrayBuffer
+      const workerBuf = buffer.slice(0);
+      await new Promise<void>((resolve, reject) => {
+        const worker = new Worker('./parse-worker.js');
+        worker.onmessage = (e) => {
+          worker.terminate();
+          if (e.data?.status === 'PARSED') {
+            resolve();
+          } else {
+            reject(new Error('Worker parsing error'));
+          }
+        };
+        worker.onerror = (err) => {
+          worker.terminate();
+          reject(err);
+        };
+        worker.postMessage({ buffer: workerBuf }, [workerBuf]);
+      });
+
+      // 2. Parse model with Three.js GLTFLoader + DRACOLoader
+      const loader = new GLTFLoader();
+      const dracoLoader = new DRACOLoader();
+      dracoLoader.setDecoderPath('./draco/');
+      loader.setDRACOLoader(dracoLoader);
+
+      return new Promise<Object3D>((resolve, reject) => {
+        loader.parse(
+          buffer,
+          '',
+          (gltf) => {
+            dracoLoader.dispose();
+            resolve(gltf.scene);
+          },
+          (err) => {
+            dracoLoader.dispose();
+            reject(err);
+          }
+        );
+      });
+    };
+
+    let model: Object3D;
+    if (cacheEnabled) {
+      model = await this.modelCache.load(assetUrl, loaderFn);
+    } else {
+      model = await loaderFn(assetUrl);
     }
 
-    const buffer = await resp.arrayBuffer();
-
-    // 1. Verify off-thread worker communication with transferable ArrayBuffer
-    // Clone buffer for worker so original buffer remains intact for GLTFLoader
-    const workerBuf = buffer.slice(0);
-    await new Promise<void>((resolve, reject) => {
-      const worker = new Worker('./parse-worker.js');
-      worker.onmessage = (e) => {
-        worker.terminate();
-        if (e.data?.status === 'PARSED') {
-          resolve();
-        } else {
-          reject(new Error('Worker parsing error'));
-        }
-      };
-      worker.onerror = (err) => {
-        worker.terminate();
-        reject(err);
-      };
-      worker.postMessage({ buffer: workerBuf }, [workerBuf]);
-    });
-
-    // 2. Parse model with Three.js GLTFLoader
-    const loader = new GLTFLoader();
-    await new Promise<void>((resolve, reject) => {
-      loader.parse(
-        buffer,
-        '',
-        (gltf) => {
-          if (this.loadedModel) {
-            this.scene.remove(this.loadedModel);
-          }
-          if (this.defaultMesh) {
-            this.scene.remove(this.defaultMesh);
-          }
-          this.loadedModel = gltf.scene;
-          this.scene.add(this.loadedModel);
-          resolve();
-        },
-        (err) => reject(err)
-      );
-    });
+    this.setActiveModel(model, assetUrl);
+    return model;
   }
+
+  public setActiveModel(model: Object3D | null, url?: string): void {
+    if (this.loadedModel) {
+      this.scene.remove(this.loadedModel);
+      if (this.modelUrl) {
+        this.modelCache.release(this.modelUrl);
+      }
+      if (!this.testLeakConfig.gpu) {
+        if (!this.modelCache.getEntry(this.modelUrl || '')) {
+          disposeHierarchy(this.loadedModel);
+        }
+      }
+    }
+    if (this.defaultMesh) {
+      this.scene.remove(this.defaultMesh);
+      this.defaultMesh.geometry.dispose();
+      if (Array.isArray(this.defaultMesh.material)) {
+        this.defaultMesh.material.forEach((m) => m.dispose());
+      } else {
+        this.defaultMesh.material.dispose();
+      }
+      this.defaultMesh = null;
+    }
+
+    this.loadedModel = model;
+    if (url) {
+      this.modelUrl = url;
+    }
+    if (this.loadedModel) {
+      this.scene.add(this.loadedModel);
+    }
+    this.renderer.render(this.scene, this.camera);
+
+    // Seeded leaks for soak testing (compiled out in production)
+    if (this.testLeakConfig.jsHeapKb > 0) {
+      ((window as any).__leak_js_heap = (window as any).__leak_js_heap || []).push(
+        new Uint8Array(this.testLeakConfig.jsHeapKb * 1024)
+      );
+    }
+    if (this.testLeakConfig.dom) {
+      const el = document.createElement('div');
+      const fn = () => {};
+      el.addEventListener('click', fn);
+      ((window as any).__leak_dom = (window as any).__leak_dom || []).push({ el, fn });
+    }
+  }
+
+  public setTestLeakConfig(config: { jsHeapKb?: number; gpu?: boolean; dom?: boolean }): void {
+    this.testLeakConfig = {
+      jsHeapKb: config.jsHeapKb ?? 0,
+      gpu: config.gpu ?? false,
+      dom: config.dom ?? false,
+    };
+  }
+
+  public getModelCacheStats(): { count: number; totalEstimatedMB: number } {
+    return this.modelCache.getStats();
+  }
+
 
   public getGlContext(): WebGLRenderingContext | WebGL2RenderingContext {
     return this.renderer.getContext();

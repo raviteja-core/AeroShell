@@ -1,0 +1,104 @@
+{
+  "timestamp": "2026-10-02T13:59:37.146Z",
+  "durationSeconds": 21.1,
+  "totalCycles": 30,
+  "warmupCycles": 8,
+  "environment": {
+    "platform": "win32",
+    "arch": "x64",
+    "windowsBuild": "10.0.26200",
+    "cpu": "Intel(R) Core(TM) i7-9850H CPU @ 2.60GHz",
+    "totalRamMB": 32541,
+    "gpuAdapter": "DXGI Hardware Adapter",
+    "electronVersion": "44.5.1",
+    "chromiumVersion": "152.0.7977.130",
+    "nodeVersion": "24.21.0",
+    "v8Version": "15.2.124.28-electron.0"
+  },
+  "regressions": {
+    "rendererJsHeapBytes": {
+      "slope": 530.43,
+      "intercept": 8830571.43,
+      "r2": 0.0421,
+      "theilSenSlope": 712.33,
+      "lowerCI95": -149.5,
+      "upperCI95": 1352.63,
+      "isLeak": false,
+      "tolerance": 2048
+    },
+    "rendererPrivateBytes": {
+      "slope": 91735.6,
+      "intercept": 109634643.84,
+      "r2": 0.8802,
+      "theilSenSlope": 82602.67,
+      "lowerCI95": 67584,
+      "upperCI95": 101888,
+      "isLeak": false,
+      "tolerance": 131072
+    },
+    "gpuPrivateBytes": {
+      "slope": 20438.37,
+      "intercept": 99068529.62,
+      "r2": 0.0575,
+      "theilSenSlope": 36864,
+      "lowerCI95": -34816,
+      "upperCI95": 55296,
+      "isLeak": false,
+      "tolerance": 131072
+    },
+    "pdhGpuDedicatedBytes": {
+      "slope": -442333.31,
+      "intercept": 133018599.14,
+      "r2": 0.8705,
+      "theilSenSlope": -408877.18,
+      "lowerCI95": -498892.8,
+      "upperCI95": -311808,
+      "isLeak": false,
+      "tolerance": 32768
+    },
+    "geometries": {
+      "slope": 0,
+      "intercept": 0,
+      "r2": 1,
+      "theilSenSlope": 0,
+      "lowerCI95": 0,
+      "upperCI95": 0,
+      "isLeak": false,
+      "tolerance": 0
+    },
+    "textures": {
+      "slope": 0,
+      "intercept": 0,
+      "r2": 1,
+      "theilSenSlope": 0,
+      "lowerCI95": 0,
+      "upperCI95": 0,
+      "isLeak": false,
+      "tolerance": 0
+    },
+    "domNodes": {
+      "slope": 0.05,
+      "intercept": 79.3,
+      "r2": 0.0121,
+      "theilSenSlope": 0,
+      "lowerCI95": 0,
+      "upperCI95": 0.3,
+      "isLeak": false,
+      "tolerance": 0
+    },
+    "domListeners": {
+      "slope": 0,
+      "intercept": 32,
+      "r2": 1,
+      "theilSenSlope": 0,
+      "lowerCI95": 0,
+      "upperCI95": 0,
+      "isLeak": false,
+      "tolerance": 0
+    }
+  },
+  "verdict": "PASS",
+  "failedSignals": [],
+  "heapSnapshotPaths": [],
+  "measureUserAgentSpecificMemorySupported": false
+}

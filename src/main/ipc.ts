@@ -1,9 +1,15 @@
-import { BrowserWindow, ipcMain, app } from 'electron';
+import { BrowserWindow, ipcMain, app, contentTracing } from 'electron';
 import * as v8 from 'node:v8';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { Channels, Telemetry, SnapshotRequest } from '../shared/ipc-contract';
-import { assertTrusted, handleCaptureHeapSnapshot } from './ipc-guards';
+import {
+  Channels,
+  Telemetry,
+  SnapshotRequest,
+  CaptureContentTracingRequest,
+  CaptureContentTracingResponse,
+} from '../shared/ipc-contract';
+import { assertTrusted, handleCaptureHeapSnapshot, handleCaptureContentTracing } from './ipc-guards';
 
 function loadNativeAddon() {
   const devPath = path.resolve(__dirname, '../../build/Release/aero_win_bridge.node');
@@ -239,5 +245,28 @@ export function registerIpc(win: BrowserWindow): void {
       readRegistry: (area, name) => native.readRegistry(area, name),
       writeHeapSnapshot: (filename) => captureRendererHeapSnapshotCdp(win, filename),
     });
+  });
+
+  ipcMain.handle(Channels.captureContentTracing, async (event, rawPayload) => {
+    assertTrusted(event, win);
+    const { durationSeconds } = CaptureContentTracingRequest.parse(rawPayload);
+    const native = getNative();
+
+    const res = await handleCaptureContentTracing({
+      durationSeconds,
+      userDataDir: app.getPath('userData'),
+      isDev: !app.isPackaged,
+      readRegistry: (area, name) => native.readRegistry(area, name),
+      recordTracing: async (targetFile, duration) => {
+        await contentTracing.startRecording({
+          included_categories: ['*'],
+          excluded_categories: ['*disabled-by-default*'],
+        });
+        await new Promise((resolve) => setTimeout(resolve, duration * 1000));
+        return contentTracing.stopRecording(targetFile);
+      },
+    });
+
+    return CaptureContentTracingResponse.parse(res);
   });
 }
